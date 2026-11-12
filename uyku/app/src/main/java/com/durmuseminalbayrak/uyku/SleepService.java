@@ -9,6 +9,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
@@ -17,6 +21,8 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.Process;
@@ -55,6 +61,22 @@ public final class SleepService extends Service {
     volatile String source = "", status = "Hazırlanıyor…", probeLog = "";
     volatile int drops;
     volatile boolean micReady, weakUltrasound;
+    volatile float rawPeakDb = Float.NaN, volScale = 1f;
+    volatile int underruns, clipFixes;
+    private short[] period;
+    private Thread speaker;
+    private HandlerThread sensorThread;
+    private volatile long discAt;
+    private final SensorEventListener accListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent e) {
+            NightRecorder r = rec;
+            if (r != null && micReady) r.addAccel(e.timestamp, e.values[0], e.values[1], e.values[2]);
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+    };
     private boolean unprocessed;
     private AudioDeviceInfo micDevice;
 
@@ -124,11 +146,10 @@ public final class SleepService extends Service {
             savedVol = -1;
         }
 
-        // verici: tek periyodun 8 kopyası, sonsuz döngüde (uygulama uyurken bile kesintisiz)
+        // verici: tek periyot, ayrı iş parçacığıyla kesintisiz yazılır (akış kipi her cihazda çalışır)
         float[] w = Sonar.waveform();
-        int frames = Sonar.N * 8;
-        short[] data = new short[frames];
-        for (int i = 0; i < frames; i++) data[i] = (short) Math.round(w[i % Sonar.N] * 0.7f * 32767);
+        period = new short[Sonar.N];
+        for (int i = 0; i < Sonar.N; i++) period[i] = (short) Math.round(w[i] * 0.7f * 32767);
         AudioAttributes aa = new AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
@@ -138,18 +159,20 @@ public final class SleepService extends Service {
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                 .build();
+        int minOut = AudioTrack.getMinBufferSize(Sonar.FS, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
         track = new AudioTrack.Builder()
                 .setAudioAttributes(aa)
                 .setAudioFormat(of)
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .setBufferSizeInBytes(frames * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(Math.max(minOut * 4, Sonar.FS))
                 .build();
-        if (track.write(data, 0, frames) != frames) throw new IOException("hoparlör tamponu yazılamadı");
-        track.setLoopPoints(0, frames, -1);
+        if (track.getState() != AudioTrack.STATE_INITIALIZED) throw new IOException("hoparlör açılamadı");
         AudioDeviceInfo spk = find(am, AudioManager.GET_DEVICES_OUTPUTS, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER);
         if (spk != null) track.setPreferredDevice(spk);
         track.setVolume(0f);
         track.play();
+        speaker = new Thread(this::speakLoop, "uyku-hoparlor");
+        speaker.start();
 
         unprocessed = "true".equals(am.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
         micDevice = find(am, AudioManager.GET_DEVICES_INPUTS, AudioDeviceInfo.TYPE_BUILTIN_MIC);
@@ -170,6 +193,15 @@ public final class SleepService extends Service {
                 }
             }
         });
+
+        // ivmeölçer: telefon göğüste/yatakta ise nefesi ve hareketi doğrudan ölçer
+        SensorManager sm = getSystemService(SensorManager.class);
+        Sensor acc = sm != null ? sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) : null;
+        if (acc != null) {
+            sensorThread = new HandlerThread("uyku-ivme");
+            sensorThread.start();
+            sm.registerListener(accListener, acc, 20000, 1_000_000, new Handler(sensorThread.getLooper()));
+        }
 
         PowerManager pm = getSystemService(PowerManager.class);
         wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "uyku:takip");
@@ -237,11 +269,12 @@ public final class SleepService extends Service {
             if (track != null) track.setVolume(i / 15f);
             SystemClock.sleep(100);
         }
+        // sıra = tercih: otomatik kazanç/gürültü bastırma içermesi en az beklenenden başla
         int[] cands = unprocessed
-                ? new int[]{MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.CAMCORDER,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC}
-                : new int[]{MediaRecorder.AudioSource.CAMCORDER, MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.MIC};
+                ? new int[]{MediaRecorder.AudioSource.UNPROCESSED, MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.CAMCORDER}
+                : new int[]{MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.CAMCORDER};
         short[] buf = new short[Sonar.N];
         float[] x = new float[Sonar.N];
         int best = -1;
@@ -286,6 +319,33 @@ public final class SleepService extends Service {
         return r;
     }
 
+    private void speakLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
+        int lastUnder = 0, k = 0;
+        while (!stopFlag) {
+            int off = 0;
+            while (off < period.length && !stopFlag) {
+                int n = track.write(period, off, period.length - off);
+                if (n < 0) {
+                    if (!stopFlag) lastError = "Hoparlöre yazılamadı (" + n + ")";
+                    return;
+                }
+                off += n;
+            }
+            if (++k % 47 == 0) {
+                int u = track.getUnderrunCount();
+                if (u != lastUnder) {
+                    lastUnder = u;
+                    underruns = u;
+                    discAt = SystemClock.elapsedRealtime() + 1200;   // kesinti mikrofona ~1 sn sonra ulaşır
+                }
+            }
+        }
+    }
+
+    private int peakSec;
+    private long blkCount;
+
     private void readLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
         mic = chooseMic();
@@ -319,7 +379,24 @@ public final class SleepService extends Service {
             }
             float[] b = pool.poll();
             if (b == null) b = new float[Sonar.N];
-            for (int i = 0; i < Sonar.N; i++) b[i] = buf[i] / 32768f;
+            int pk = 0;
+            for (int i = 0; i < Sonar.N; i++) {
+                b[i] = buf[i] / 32768f;
+                int v = Math.abs(buf[i]);
+                if (v > pk) pk = v;
+            }
+            if (pk > peakSec) peakSec = pk;
+            if (++blkCount % 47 == 0) {
+                rawPeakDb = (float) (20 * Math.log10(Math.max(1, peakSec) / 32768.0));
+                // mikrofon doyuyorsa (kırpılma) hoparlörü yarıya indir; en fazla 3 kez
+                if (peakSec >= 32600 && clipFixes < 3 && track != null) {
+                    volScale *= 0.5f;
+                    track.setVolume(volScale);
+                    clipFixes++;
+                    discAt = SystemClock.elapsedRealtime() + 600;
+                }
+                peakSec = 0;
+            }
             if (!q.offer(b)) {
                 // işleme yetişemedi: blok atıldı → hizalama yeniden kurulacak
                 drops++;
@@ -340,8 +417,10 @@ public final class SleepService extends Service {
             }
             long el = SystemClock.elapsedRealtime() - t0;
             if (b == null) continue;
-            if (discFlag) {
+            long da = discAt;
+            if (discFlag || (da != 0 && SystemClock.elapsedRealtime() >= da)) {
                 discFlag = false;
+                if (da != 0 && SystemClock.elapsedRealtime() >= da) discAt = 0;
                 rec.discontinuity();
             }
             rec.process(b);
@@ -397,22 +476,35 @@ public final class SleepService extends Service {
         if (stopping) return;
         stopping = true;
         stopFlag = true;
+        try {
+            SensorManager sm = getSystemService(SensorManager.class);
+            if (sm != null) sm.unregisterListener(accListener);
+        } catch (Exception ignored) {
+        }
+        if (sensorThread != null) sensorThread.quitSafely();
         if (track != null) {
             try {
+                float v0 = volScale;
                 for (int i = 8; i >= 0; i--) {
-                    track.setVolume(i / 8f);
+                    track.setVolume(v0 * i / 8f);
                     SystemClock.sleep(40);
                 }
-                track.stop();
+                track.pause();
+                track.flush();
             } catch (Exception ignored) {
             }
         }
         if (mic != null) {
             try { mic.stop(); } catch (Exception ignored) { }
         }
+        join(speaker);
         join(reader);
         join(worker);
-        if (track != null) { track.release(); track = null; }
+        if (track != null) {
+            try { track.stop(); } catch (Exception ignored) { }
+            track.release();
+            track = null;
+        }
         if (mic != null) { mic.release(); mic = null; }
         if (savedVol >= 0) {
             try {

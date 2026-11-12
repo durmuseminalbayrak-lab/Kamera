@@ -12,7 +12,10 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
 
     public final Sonar sonar;
     public final SoundMeter sound;
+    public final Accel accel;
     private final Out out;
+    private double curT, lastSonarValidT = -1e9;
+    private int accelSecs;
 
     private int secInEpoch, epochIdx;
     private final float[] rates = new float[40], amps = new float[40];
@@ -27,15 +30,31 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
     private double moveStart;
     private float moveEvMax;
 
-    // canlı ekran için
+    // canlı ekran için (sonar + ivmeölçer birleşik)
     public volatile int totalPauses, totalMoves, totalSnores, epochs;
     public volatile float lastEpochRate = Float.NaN;
+    public volatile float rate = Float.NaN, quality;
+    public volatile boolean valid, moving, inPause;
+    /** 0 = ölçüm yok, 1 = sonar, 2 = ivmeölçer (telefon göğüste/yatakta). */
+    public volatile int activeSource;
 
     public NightRecorder(Out out) {
         this.out = out;
         sonar = new Sonar(this);
         sound = new SoundMeter(this);
+        accel = new Accel(this::accelPause);
     }
+
+    /** İvmeölçer örneği (sensör iş parçacığından). */
+    public void addAccel(long tNs, float x, float y, float z) { accel.add(tNs, x, y, z); }
+
+    private void accelPause(double startSec, double durSec, float depth) {
+        // sonar nefesi ölçüyorsa duraklamayı o bildirir; ivmeölçerinki ancak sonar sustuysa sayılır
+        if (curT - lastSonarValidT > 60) pause(startSec, durSec, depth);
+    }
+
+    /** Canlı ekranda gösterilecek dalga (o an kullanılan kaynaktan). */
+    public float[] wave() { return activeSource == 2 ? accel.waveOut : sonar.waveOut; }
 
     /** 1024 örneklik mikrofon bloğu. */
     public void process(float[] x) {
@@ -49,25 +68,41 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
     @Override
     public void second(Sonar s) {
         double t = s.timeSec();
-        if (s.valid) {
+        curT = t;
+        accel.second(t);
+        boolean sv = s.valid, av = accel.valid;
+        if (sv) lastSonarValidT = t;
+        boolean useA = av && (!sv || accel.quality > s.quality + 0.05f);
+        activeSource = useA ? 2 : sv ? 1 : 0;
+        float r = useA ? accel.rate : sv ? s.rate : Float.NaN;
+        boolean v = sv || av;
+        boolean mv = s.moving || accel.moving;
+        float mi = Math.max(s.moveIntensity, accel.moveIntensity);
+        rate = r;
+        quality = Math.max(s.quality, av ? accel.quality : 0f);
+        valid = v;
+        moving = mv;
+        inPause = useA ? accel.inPause : s.inPause;
+        if (v) {
             validSecs++;
-            if (nRates < rates.length) rates[nRates++] = s.rate;
+            if (nRates < rates.length) rates[nRates++] = r;
         }
-        qSum += s.quality;
-        if (s.moving) {
+        if (useA) accelSecs++;
+        qSum += quality;
+        if (mv) {
             moveSecs++;
-            moveMax = Math.max(moveMax, s.moveIntensity);
+            moveMax = Math.max(moveMax, mi);
         }
-        float r = s.ratio;
-        if (r == r && s.valid && !s.moving && nAmps < amps.length) amps[nAmps++] = r;
+        float ra = useA ? accel.ratio : s.ratio;
+        if (ra == ra && v && !mv && nAmps < amps.length) amps[nAmps++] = ra;
         if (s.disturbed) flagReset = true;
-        if (s.moving) {
+        if (mv) {
             if (!inMove) {
                 inMove = true;
                 moveStart = t - 1;
                 moveEvMax = 0;
             }
-            moveEvMax = Math.max(moveEvMax, s.moveIntensity);
+            moveEvMax = Math.max(moveEvMax, mi);
         } else if (inMove) {
             inMove = false;
             totalMoves++;
@@ -98,7 +133,7 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
         e.move = moveSecs;
         e.moveMax = moveMax;
         e.amp = nAmps >= 5 ? Sonar.median(amps, nAmps) : Float.NaN;
-        float[] bs = sonar.breathStats();
+        float[] bs = accelSecs * 2 > secInEpoch ? accel.breathStats() : sonar.breathStats();
         e.cv = bs != null && bs[0] >= 4 ? bs[2] : Float.NaN;
         e.pauses = pausesEnded;
         e.pauseSec = pauseSecs;
@@ -121,5 +156,6 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
         pausesEnded = 0;
         pauseSecs = 0;
         flagReset = false;
+        accelSecs = 0;
     }
 }

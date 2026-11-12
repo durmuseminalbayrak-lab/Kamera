@@ -29,7 +29,6 @@ public final class Sonar {
     static final double LOOP_W = 2 * Math.PI * 0.05 / FRAME_HZ;
     static final double LOOP_A = 2 * LOOP_W, LOOP_B = LOOP_W * LOOP_W;
     public static final float Q_MIN = 0.45f;
-    static final double PAUSE_LEAD = 4.0, PAUSE_TAIL = 1.0, PAUSE_MAX = 90;
 
     public interface Listener {
         /** Saniyede bir çağrılır; alanlar güncel. */
@@ -105,13 +104,13 @@ public final class Sonar {
     private long lastWaveEnd;
 
     // genlik / duraklama
-    private final float[] aRing = new float[180];
-    private int aPos, aCount;
-    private double pauseStart, pauseEndT = -1e9;
-    private int calmValid;
-    private final boolean[] vRing = new boolean[30];
-    private int vPos;
-    private float pauseMin;
+    private final PauseDetector pd;
+
+    // tanı (test ekranı): spektrum, gecikme profili, en iyi hücrenin yörüngesi
+    public static final int SPEC_LO = 320, SPEC_HI = 490;   // 15,0–23,0 kHz
+    private final double[] specAcc = new double[SPEC_HI - SPEC_LO + 1];
+    public volatile float[] specDb, profStatDb, profDynDb, trajX, trajY;
+    public volatile int diagD0 = -1;
 
     // --- dışarıya açık sonuçlar (her saniye) ---
     public volatile float rate = Float.NaN, quality, ratio = Float.NaN, moveIntensity;
@@ -124,6 +123,7 @@ public final class Sonar {
 
     public Sonar(Listener l) {
         listener = l;
+        pd = new PauseDetector(l == null ? null : l::pause);
         float[] w = waveform();
         for (int i = 0; i < N; i++) { re[i] = w[i]; im[i] = 0; }
         fft.forward(re, im);
@@ -172,6 +172,11 @@ public final class Sonar {
         return out > 0 && in > 0 ? (float) (10 * Math.log10((in / NL) / (out / no))) : Float.NaN;
     }
 
+    /** Hoparlör ile mikrofon saatleri arasındaki kayma (milyonda bir). */
+    public float driftPpm() {
+        return (float) (Math.abs(pVel) / (2 * Math.PI * K0) * 1e6);   // pVel: fc'de blok başına faz
+    }
+
     /** Seçili nefes hücresinin yaklaşık uzaklığı (cm); yoksa -1. */
     public int distanceCm() {
         int b = bestTap, d = d0;
@@ -181,7 +186,7 @@ public final class Sonar {
     }
     String dbg() {
         double ws = 0; int nw = 0; for (float v : wgt) { ws += v; if (v > 0) nw++; }
-        return String.format("d0=%d zMag=%.4g vel=%.4f A=%.3g aRef=%.3g aCount=%d wsum=%.3f nw=%d calmValid=%d", d0, zMag, pVel, dbgA, median(aRing, aCount), aCount, ws, nw, calmValid);
+        return String.format("d0=%d zMag=%.4g vel=%.4f A=%.3g aRef=%.3g aCount=%d wsum=%.3f nw=%d calmValid=%d", d0, zMag, pVel, dbgA, median(pd.aRing, pd.aCount), pd.aCount, ws, nw, pd.calmValid);
     }
     private float dbgA;
 
@@ -202,7 +207,7 @@ public final class Sonar {
         Arrays.fill(ai, 0);
         for (float[] a : hp2) Arrays.fill(a, 0);
         Arrays.fill(hpSum, 0);
-        aCount = 0;
+        pd.reset();
         inPause = false;
         lastWave = null;
         disturbed = true;
@@ -245,6 +250,10 @@ public final class Sonar {
         }
         fft.forward(re, im);
         frames++;
+        for (int k = SPEC_LO; k <= SPEC_HI; k++) {
+            double pw = (re[k] * re[k] + im[k] * im[k]) / ((N / 2.0) * (N / 2.0));
+            specAcc[k - SPEC_LO] += (pw - specAcc[k - SPEC_LO]) * 0.1;
+        }
         for (int j = 0; j < NL; j++) {
             int k = K0 - L + j;
             double r = re[k], q = im[k];
@@ -394,7 +403,7 @@ public final class Sonar {
             lastMoveEndSlow = slowTotal;
             lastMoveTime = t;
             moveRun++;
-            if (moveRun >= 2 || inten > 25) aCount = 0;   // pozisyon değişti: genlik referansı yeniden
+            if (moveRun >= 2 || inten > 25) pd.resetRef();   // pozisyon değişti: genlik referansı yeniden
         } else moveRun = 0;
         mvSecMax = 0;
         slowInSec = 0;
@@ -402,6 +411,7 @@ public final class Sonar {
         analyze();
         amplitudeAndPause(t);
         diagnostics();
+        publishDiag();
         if (listener != null) listener.second(this);
         disturbed = false;
     }
@@ -456,7 +466,7 @@ public final class Sonar {
         Arrays.sort(es, 0, ne);
         double enoise = ne > 0 ? es[ne / 2] : 0;
         // sıralama: periyodiklik × enerji yeterliliği; genlik ağırlıkları duraklamada dondurulur
-        boolean freeze = inPause || timeSec() < pauseEndT + 30;   // pencere duraklamayı içerirken ağırlıklar sabit
+        boolean freeze = inPause || timeSec() < pd.endTime() + 30;   // pencere duraklamayı içerirken ağırlıklar sabit
         int[] top = {-1, -1, -1};
         float[] tv = {0, 0, 0};
         for (int d = 0; d < M; d++) {
@@ -557,15 +567,17 @@ public final class Sonar {
     }
 
     /** İlk belirgin tepe (en yüksek tepenin %85'ine ulaşan ilk tepe; öncesinde çukur şartı). */
-    static int pickPeak(float[] a, int lagMax) {
+    static int pickPeak(float[] a, int lagMax) { return pickPeak(a, LAG_MIN, lagMax); }
+
+    static int pickPeak(float[] a, int lagMin, int lagMax) {
         float gmax = -1;
-        for (int k = LAG_MIN; k < lagMax; k++)
+        for (int k = lagMin; k < lagMax; k++)
             if (a[k] >= a[k - 1] && a[k] >= a[k + 1] && a[k] > gmax) gmax = a[k];
         if (gmax <= 0.1f) return -1;
         float mn = 1;
         for (int k = 1; k < lagMax; k++) {
             if (a[k] < mn) mn = a[k];
-            if (k >= LAG_MIN && a[k] >= a[k - 1] && a[k] >= a[k + 1] && a[k] >= 0.85f * gmax && mn < a[k] - 0.2f)
+            if (k >= lagMin && a[k] >= a[k - 1] && a[k] >= a[k + 1] && a[k] >= 0.85f * gmax && mn < a[k] - 0.2f)
                 return k;
         }
         return -1;
@@ -690,37 +702,42 @@ public final class Sonar {
             den += wgt[d];
         }
         float A = den > 0 && hpFill >= PW ? (float) Math.sqrt(num / den) : Float.NaN;
-        boolean calm = !moving && t - lastMoveTime > 15;
-        if (!inPause) {
-            // son 30 sn'de geçerli nefes oranı (duraklamadan önce nefes olmalı)
-            vRing[vPos] = valid && calm;
-            vPos = (vPos + 1) % vRing.length;
-            calmValid = 0;
-            for (boolean v : vRing) if (v) calmValid++;
-        }
-        if (A == A && valid && calm && !inPause && t > pauseEndT + 30) {
-            aRing[aPos] = A;
-            aPos = (aPos + 1) % aRing.length;
-            if (aCount < aRing.length) aCount++;
-        }
         dbgA = A;
-        float ref = aCount >= 40 ? median(aRing, aCount) : Float.NaN;
-        ratio = (A == A && ref == ref && ref > 0) ? A / ref : Float.NaN;
-        if (!inPause) {
-            if (ratio == ratio && ratio < 0.25f && t - lastMoveTime > PAUSE_LEAD + 16 && calmValid >= 15) {
-                inPause = true;
-                pauseStart = t - PAUSE_LEAD;
-                pauseMin = ratio;
-            }
+        pd.second(t, A, valid, moving, lastMoveTime);
+        ratio = pd.ratio;
+        inPause = pd.inPause;
+    }
+
+    private void publishDiag() {
+        float[] sp = new float[specAcc.length];
+        for (int i = 0; i < sp.length; i++) sp[i] = (float) (10 * Math.log10(specAcc[i] + 1e-20));
+        specDb = sp;
+        diagD0 = d0;
+        int n = Math.min(rcount, WIN);
+        if (d0 < 0 || n < 12) return;
+        float ref = (float) (zMag * zMag);
+        float[] st = new float[M], dy = new float[M];
+        int start = (rpos - n + RING) % RING;
+        for (int d = 0; d < M; d++) {
+            double sr = 0, si = 0;
+            for (int i = 0, p = start; i < n; i++, p = (p + 1) % RING) { sr += rr[d][p]; si += ri[d][p]; }
+            sr /= n;
+            si /= n;
+            st[d] = db10((sr * sr + si * si) / ref);
+            dy[d] = en[d] > 0 ? db10(en[d] / ref) : -200f;
+        }
+        profStatDb = st;
+        profDynDb = dy;
+        int b = bestTap;
+        if (b >= 0) {
+            load(b, start, n);
+            float[] x = new float[n], y = new float[n];
+            for (int i = 0; i < n; i++) { x[i] = (float) xr[i]; y[i] = (float) xi[i]; }
+            trajX = x;
+            trajY = y;
         } else {
-            if (ratio == ratio) pauseMin = Math.min(pauseMin, ratio);
-            double dur = t - pauseStart;
-            if (moving || ratio != ratio || ratio > 0.45f) {
-                pauseEndT = t;
-                dur -= PAUSE_TAIL;
-                if (dur >= 10 && dur <= PAUSE_MAX && listener != null) listener.pause(pauseStart, dur, pauseMin);
-                inPause = false;
-            } else if (dur > PAUSE_MAX) { inPause = false; pauseEndT = t; }   // çok uzun: kişi yok/sinyal kaybı, duraklama sayılmaz
+            trajX = null;
+            trajY = null;
         }
     }
 
@@ -736,11 +753,13 @@ public final class Sonar {
 
     /** Son pencerenin nefes dalgasından soluk sayısı, ortalama aralık (sn) ve değişkenlik (CV). */
     public float[] breathStats() {
-        float[] w = waveOut;
-        float lag = lagSec;
-        if (w == null || !(lag > 0) || !valid) return null;
+        return valid ? breathStats(waveOut, lagSec, SLOW_HZ) : null;
+    }
+
+    static float[] breathStats(float[] w, float lag, double fs) {
+        if (w == null || !(lag > 0)) return null;
         int n = w.length;
-        int minDist = Math.max(4, Math.round(0.6f * lag * (float) SLOW_HZ));
+        int minDist = Math.max(4, Math.round(0.6f * lag * (float) fs));
         int half = minDist / 2;
         int[] pk = new int[n];
         int np = 0;
@@ -754,7 +773,7 @@ public final class Sonar {
         if (np < 3) return new float[]{np, Float.NaN, Float.NaN};
         double s = 0, s2 = 0;
         for (int i = 1; i < np; i++) {
-            double d = (pk[i] - pk[i - 1]) / SLOW_HZ;
+            double d = (pk[i] - pk[i - 1]) / fs;
             s += d;
             s2 += d * d;
         }

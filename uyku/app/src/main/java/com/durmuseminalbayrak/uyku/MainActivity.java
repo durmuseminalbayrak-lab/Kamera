@@ -54,6 +54,9 @@ public final class MainActivity extends Activity {
 
     private TextView lvClock, lvStatus, lvRate, lvQual, lvInfo, lvDiag;
     private WaveView lvWave;
+    private DiagView lvDiagView;
+    private int lastResets = -1;
+    private long lastResetChange;
     private final Runnable tick = this::liveTick;
 
     // ------------------------------------------------------------------ yaşam döngüsü
@@ -235,11 +238,15 @@ public final class MainActivity extends Activity {
 
         col.addView(section("Nasıl kullanılır?"));
         LinearLayout how = card();
-        how.addView(tv("• Telefonu yatağın kenarına ya da komodine koy; göğsüne 30–80 cm uzakta olsun ve alt kenarı "
-                + "(hoparlör ve mikrofon) sana baksın.\n"
-                + "• Şarja tak. Ekran kapalıyken de çalışır.\n"
-                + "• Kulaklık bağlıysa çıkar; sesli müzik ya da beyaz gürültü çalma.\n"
-                + "• İlk gece önce \"Yerleşimi test et\": normal nefes al, dalga düzenli inip çıkıyor ve sinyal \"iyi\" ise tamam.\n"
+        how.addView(tv("İki yolla ölçer; uygulama hangisi iyi çalışıyorsa onu kullanır:\n"
+                + "1) Sonar: telefonu komodine ya da yatağın kenarına koy, göğsüne 30–80 cm uzakta olsun, alt kenarı "
+                + "(hoparlör ve mikrofon) sana baksın. Göğse dayama: o kadar yakında yankı hoparlörün sesine karışır.\n"
+                + "2) Hareket sensörü: sırt üstü yatarken telefonu göğsüne ya da karnına koyarsan nefesi telefonun "
+                + "eğiminden ölçer. Yatağın üstünde, vücuduna yakın dururken de hareketleri algılar.\n"
+                + "• Telefonu elde tutma; el titremesi hareket sayılır.\n"
+                + "• Şarja tak. Ekran kapalıyken de çalışır. Kulaklık bağlıysa çıkar; müzik ya da beyaz gürültü çalma.\n"
+                + "• İlk gece önce \"Yerleşimi test et\". Normal nefes al; \"Sinyal iyi/orta\" ve düzenli dalga görürsen tamam. "
+                + "Nefes bulunamazsa ekran nedenini yazar.\n"
                 + "• Sabah \"Bitir\"e basılı tut ya da bildirimdeki \"Bitir\"e dokun; rapor açılır.\n"
                 + "• Tıbbi cihaz değildir. Sık nefes duraklaması görürsen bir uyku uzmanına danış.", 14, TXT, false));
         col.addView(how);
@@ -333,10 +340,16 @@ public final class MainActivity extends Activity {
         lvInfo = tv("", 14, SUB, false);
         lvInfo.setGravity(Gravity.CENTER);
         col.addView(lvInfo);
+        lvDiagView = null;
+        if (s.test) {
+            lvDiagView = new DiagView(this);
+            col.addView(lvDiagView, lp(-1, -2, 0, dp(10), 0, 0));
+        }
 
         if (s.test) {
-            TextView tip = tv("Normal nefes al ve kıpırdama. Dalga düzenli inip çıkıyor ve sinyal \"iyi\" ise yerleşim tamam. "
-                    + "Zayıfsa telefonu biraz yaklaştır ya da alt kenarını göğsüne çevir.", 13, SUB, false);
+            TextView tip = tv("Telefonu bırak (elde tutma), normal nefes al ve kıpırdama. Dalga düzenli inip çıkıyorsa yerleşim tamam. "
+                    + "Sonar için 30–80 cm uzak, alt kenarı sana dönük; hareket sensörü için sırt üstü yatıp göğsüne koy. "
+                    + "Sorun olursa bu ekranın görüntüsünü gönder.", 13, SUB, false);
             tip.setGravity(Gravity.CENTER);
             tip.setPadding(0, dp(14), 0, 0);
             col.addView(tip);
@@ -407,27 +420,55 @@ public final class MainActivity extends Activity {
             return;
         }
         Sonar so = r.sonar;
-        lvRate.setText(so.valid ? String.format(TR, "%.0f", so.rate) : "—");
+        if (so.resets != lastResets) {
+            if (lastResets >= 0) lastResetChange = System.currentTimeMillis();
+            lastResets = so.resets;
+        }
+        boolean v = r.valid;
+        float qv = r.quality;
+        lvRate.setText(v ? String.format(TR, "%.0f", r.rate) : "—");
         String q;
         int qc;
-        if (so.moving) { q = "Hareket algılandı"; qc = WARN; }
-        else if (so.inPause) { q = "Nefes duraklaması olabilir"; qc = BAD; }
-        else if (so.valid && so.quality >= 0.75f) { q = "Sinyal iyi"; qc = GOOD; }
-        else if (so.valid) { q = "Sinyal orta"; qc = WARN; }
+        if (r.moving) { q = "Hareket algılandı — telefon ya da vücut oynuyor"; qc = WARN; }
+        else if (r.inPause) { q = "Nefes duraklaması olabilir"; qc = BAD; }
+        else if (v) {
+            q = (qv >= 0.7f ? "Sinyal iyi" : "Sinyal orta") + String.format(TR, " (%.2f) · %s", qv,
+                    r.activeSource == 2 ? "hareket sensörü" : "sonar");
+            qc = qv >= 0.7f ? GOOD : WARN;
+        }
         else if (so.timeSec() < 14) { q = "Nefes aranıyor… (ilk 10–15 sn)"; qc = SUB; }
-        else { q = "Sinyal zayıf — nefes bulunamadı"; qc = BAD; }
+        else { q = reason(s, r); qc = BAD; }
         lvQual.setText(q);
         lvQual.setTextColor(qc);
-        lvWave.set(so.waveOut, so.valid ? ACC : 0xFF4A5577);
+        lvWave.set(r.wave(), v ? ACC : 0xFF4A5577);
+        if (lvDiagView != null) lvDiagView.set(so);
         float lvl = r.sound.levelDb;
         lvInfo.setText((s.weakUltrasound ? "⚠ Bu mikrofon/hoparlör ultrasonu zayıf iletiyor; ölçüm zor olabilir.\n" : "")
                 + "Duraklama " + r.totalPauses + " · Hareket " + r.totalMoves + " · Horlama " + r.totalSnores
                 + (lvl == lvl ? String.format(TR, " · Ses %.0f dB", lvl) : ""));
         int cm = so.distanceCm();
-        lvDiag.setText(String.format(TR, "doğrudan %.0f dB · yankı %.0f dB · taban %.0f dB · ultrason SNR %.0f dB\n"
-                        + "mikrofon: %s · mesafe %s · sıfırlama %d · kayıp %d\n%s",
-                so.directDb, so.echoDb, so.noiseDb, so.bandSnrDb, s.source, cm >= 0 ? "~" + cm + " cm" : "—", so.resets, s.drops, s.probeLog));
+        Accel ac = r.accel;
+        lvDiag.setText(String.format(TR, "doğrudan %.0f dB · yankı %.0f dB · taban %.0f dB · ultrason SNR %.0f dB · tepe %.0f dBFS\n"
+                        + "mikrofon: %s · ses %%%d · mesafe %s · sıfırlama %d · kayıp %d/%d · kayma %.0f ppm\n"
+                        + "sonar q %.2f · ivme q %.2f (%s, %.3f m/s²)\n%s",
+                so.directDb, so.echoDb, so.noiseDb, so.bandSnrDb, s.rawPeakDb,
+                s.source, Math.round(100 * s.volScale), cm >= 0 ? "~" + cm + " cm" : "—", so.resets, s.drops, s.underruns, so.driftPpm(),
+                so.quality, ac.quality, ac.present ? (ac.valid ? "nefes" : "yok") : "sensör yok", ac.ampRms, s.probeLog));
         h.postDelayed(tick, 250);
+    }
+
+    /** Nefes bulunamadığında olası nedeni sade dille söyle. */
+    private String reason(SleepService s, NightRecorder r) {
+        Sonar so = r.sonar;
+        float snr = so.bandSnrDb;
+        if (snr == snr && snr < 15)
+            return String.format(TR, "Ultrason alınamıyor (SNR %.0f dB): hoparlör ya da mikrofon 18–20 kHz'i geçirmiyor", snr);
+        if (s.rawPeakDb == s.rawPeakDb && s.rawPeakDb > -1f) return "Mikrofon doyuyor: Ayarlar'dan sinyal gücünü düşür";
+        if (System.currentTimeMillis() - lastResetChange < 20000)
+            return "Sinyal kararsız: telefon oynuyor ya da ses sistemi araya giriyor";
+        if (so.echoDb == so.echoDb && so.noiseDb == so.noiseDb && so.echoDb < so.noiseDb + 4)
+            return "Yankı zayıf: telefonu 30–60 cm'ye yaklaştır, alt kenarı göğsüne dönsün";
+        return "Nefes bulunamadı: telefonu sabit bir yere bırak (elde tutma), 30–60 cm uzağa koy";
     }
 
     // ------------------------------------------------------------------ rapor
