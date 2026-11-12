@@ -1,0 +1,1 @@
+durum=success calistirma=4 commit=42a3a84b43062d79385c9b8dd6732935b9f8d89c
