@@ -1,0 +1,54 @@
+name: Uyku APK derle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'uyku/**'
+      - '.github/workflows/uyku.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Derle
+        shell: bash
+        run: gradle -p uyku assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Yayınla (indirme bağlantısı)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp uyku/app/build/outputs/apk/release/app-release.apk uyku.apk
+          gh release delete uyku --yes --cleanup-tag || true
+          gh release create uyku uyku.apk --target "${{ github.sha }}" --title "Uyku uygulaması (sürüm 1.${{ github.run_number }})" --notes "Telefondan indirip kurun: uyku.apk" --latest=false
+
+      - name: Derleme günlüğünü kaydet
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p /tmp/gunluk
+          echo "durum=${{ job.status }} calistirma=${{ github.run_number }} commit=${{ github.sha }}" > /tmp/gunluk/durum.txt
+          tail -n 400 build.log > /tmp/gunluk/build.log 2>/dev/null || echo "build.log yok" > /tmp/gunluk/build.log
+          cd /tmp/gunluk
+          git init -q
+          git checkout -q -b ci-logs-uyku
+          git add .
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "Uyku derleme ${{ github.run_number }}: ${{ job.status }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-logs-uyku
