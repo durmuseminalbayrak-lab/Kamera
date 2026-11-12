@@ -174,7 +174,7 @@
   const toJpeg = (c, q) => new Promise(r => c.toBlob(r, 'image/jpeg', q || 0.92));
 
   // ================= AYARLAR =================
-  const DEF = { afLock: true, refocus: false, grid: false, level: true, hist: false, zebra: false, thermal: false, voice: false, geo: false, steady: true, burst: 3, photoQ: 0, vres: 1 };
+  const DEF = { fullPhoto: false, afLock: true, refocus: false, grid: false, level: true, hist: false, zebra: false, thermal: false, voice: false, geo: false, steady: true, burst: 3, photoQ: 0, vres: 1 };
   const S = Object.assign({}, DEF);
   try { Object.assign(S, JSON.parse(localStorage.getItem('kamera-ayar') || '{}')); } catch (e) {}
   const saveS = () => { try { localStorage.setItem('kamera-ayar', JSON.stringify(S)); } catch (e) {} };
@@ -412,11 +412,11 @@
   async function measure(nx, ny, n) { let s = 0; for (let i = 0; i < n; i++) { await frameT(); s += regionSharp(nx, ny); } return s / n; }
   // Diyoptri (1/metre) ekseninde kaba + ince tarama; en yüksek netliği verir
   async function focusSearch(Dlo, Dhi, setD, meas) {
-    let best = -1, bestD = Dlo, worst = Infinity; const N = 10, st = (Dhi - Dlo) / N;
+    let best = -1, bestD = Dlo, worst = Infinity; const N = 6, st = (Dhi - Dlo) / N;
     for (let i = 0; i <= N; i++) { const D = Dlo + st * i; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } if (s < worst) worst = s; }
     focusSearch.contrast = worst > 0 ? best / worst : (best > 0 ? 99 : 1);
     const lo = Math.max(Dlo, bestD - st), hi = Math.min(Dhi, bestD + st);
-    for (let i = 0; i <= 6; i++) { const D = lo + (hi - lo) * i / 6; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
+    for (let i = 0; i <= 4; i++) { const D = lo + (hi - lo) * i / 4; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
     await setD(bestD);
     return bestD;
   }
@@ -433,7 +433,7 @@
       const fd = c.focusDistance, Dlo = 1 / Math.max(fd.max, 0.01), Dhi = 1 / Math.max(fd.min, 0.01);
       const D = await focusSearch(Dlo, Dhi,
         D => within(track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: clamp(1 / Math.max(D, 1e-4), fd.min, fd.max) }] }).catch(() => {}), 400),
-        async () => { await settle(2); return measure(x, y, 2); });
+        async () => { await settle(1); return measure(x, y, 1); });
       if (focusSearch.contrast < 1.25) {
         // Lens hareket etmedi ya da bölgede netlik farkı yok: sonuca güvenme, otomatik odağa dön
         unlockAF();
@@ -842,6 +842,12 @@
     return lapVar(toGray(x.getImageData(0, 0, S2, S2).data, S2 * S2), S2, S2);
   }
   async function takeBest(n) {
+    if (!S.fullPhoto) {
+      // Anlık çekim: ekrandaki (doğru odaklı) görüntüden ~0,3 sn içinde kareler alıp en netini kaydeder
+      const k = n <= 1 ? 1 : n * 3;
+      const c = await previewBurst(k);
+      if (c) return { blob: await toJpeg(c, 0.95), how: 'anlık' + (k > 1 ? ' · ' + k + ' kareden en neti' : '') };
+    }
     const fp = focusPt || { x: 0.5, y: 0.5 }, vw = video.videoWidth, vh = video.videoHeight;
     showBusy('Çekiliyor…');
     const pv = await previewBurst(6);
@@ -1226,7 +1232,7 @@
     busy = true;
     try {
       for (let i = timerSec; i > 0; i--) { showBusy(String(i)); vibrate(20); await sleep(1000); }
-      await waitSteady(1500);
+      await waitSteady(S.fullPhoto ? 1500 : 400);
       hideBusy(); $('view').style.opacity = .4; setTimeout(() => $('view').style.opacity = 1, 120); vibrate(25);
       if (mode === 'night') await finishPhoto(await nightShot(), 'GECE');
       else if (mode === 'doc') { const r = await takeBest(Math.min(S.burst, 3)); hideBusy(); await openDoc(r); }
@@ -1252,6 +1258,7 @@
 
   // ================= AYAR PANELİ =================
   const SW = [
+    ['fullPhoto', 'Tam çözünürlüklü fotoğraf (yavaş)', 'Kapalıyken ekranda gördüğünüz görüntü anında kaydedilir (önerilen)'],
     ['steady', 'Titreme kontrollü deklanşör', 'Elinizin titreme düzeyini ölçer, en sakin anda çeker'],
     ['afLock', 'Dokununca odağı kilitle', 'Odak kendiliğinden kaymaz; açmak için "AF kilitli" rozetine dokunun'],
     ['refocus', 'Çekmeden önce yeniden odakla', 'Kapalı önerilir; açıkken her çekimde odak arar'],
