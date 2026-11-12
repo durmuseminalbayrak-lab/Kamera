@@ -199,12 +199,20 @@
   }
 
   // ================= SENSÖRLER =================
-  const M = { rotAvg: 99, hasRot: false, ax: 0, ay: 9.8, az: 0, hasG: false, heading: null, pos: null };
+  const M = { rotAvg: 99, hasRot: false, ax: 0, ay: 9.8, az: 0, hasG: false, heading: null, pos: null, hist: [] };
+  // Kişiye göre sakinlik eşiği: son ~2-3 saniyedeki titremenin daha sakin %25'lik dilimi.
+  // Eli hiç tam durmayan biri için de "en sakin anlarını" yakalar.
+  function steadyTarget() {
+    if (M.hist.length < 20) return 4;
+    const s = M.hist.slice().sort((a, b) => a - b);
+    return clamp(s[Math.floor(s.length * 0.25)], 1.5, 12);
+  }
   window.addEventListener('devicemotion', e => {
     const r = e.rotationRate;
     if (r && (r.alpha != null || r.beta != null || r.gamma != null)) {
       const m = Math.hypot(r.alpha || 0, r.beta || 0, r.gamma || 0);
       M.rotAvg = M.hasRot ? M.rotAvg * 0.75 + m * 0.25 : m; M.hasRot = true;
+      M.hist.push(M.rotAvg); if (M.hist.length > 180) M.hist.shift();
     }
     const g = e.accelerationIncludingGravity;
     if (g && g.x != null) {
@@ -218,9 +226,9 @@
   function sensorsTick() {
     const st = $('steady');
     if (S.steady && M.hasRot && started() && PHOTO_MODES.includes(mode)) {
-      const v = M.rotAvg; st.style.display = 'flex';
-      st.querySelector('i').style.background = v < 4 ? '#5df58a' : v < 10 ? '#ffd54a' : '#ff5252';
-      st.querySelector('span').textContent = v < 4 ? 'Sabit' : 'Kıpırdıyor';
+      const v = M.rotAvg, t = steadyTarget(); st.style.display = 'flex';
+      st.querySelector('i').style.background = v <= t ? '#5df58a' : v <= t * 2 ? '#ffd54a' : '#ff5252';
+      st.querySelector('span').textContent = v <= t ? 'Sakin an' : 'Kıpırdıyor';
     } else st.style.display = 'none';
 
     const hz = $('horizon'), bw = $('bubbleWrap');
@@ -246,14 +254,13 @@
 
   async function waitSteady(maxMs) {
     if (!S.steady || !M.hasRot) return;
-    const t0 = performance.now(); let ok0 = 0;
+    // Sabit bir eşik yerine kişinin kendi titreme düzeyine göre en sakin anı bekler (en fazla maxMs).
+    const thr = steadyTarget(), t0 = performance.now();
     while (true) {
-      const now = performance.now(), el = now - t0;
-      if (el > maxMs) break;
-      const thr = el < 1200 ? 4 : 7;
-      if (M.rotAvg < thr) { if (!ok0) ok0 = now; if (now - ok0 >= 150) break; } else ok0 = 0;
-      if (el > 250) showBusy('Sabit tutun…');
-      await sleep(16);
+      const el = performance.now() - t0;
+      if (el > maxMs || M.rotAvg <= thr) break;
+      if (el > 200) showBusy('Sabit tutun…');
+      await sleep(8);
     }
   }
 
@@ -1119,7 +1126,7 @@
     busy = true;
     try {
       for (let i = timerSec; i > 0; i--) { showBusy(String(i)); vibrate(20); await sleep(1000); }
-      await waitSteady(2500);
+      await waitSteady(1500);
       hideBusy(); $('view').style.opacity = .4; setTimeout(() => $('view').style.opacity = 1, 120); vibrate(25);
       if (mode === 'night') await finishPhoto(await nightShot(), 'GECE');
       else if (mode === 'doc') { const r = await takeBest(Math.min(S.burst, 3)); hideBusy(); await openDoc(r); }
@@ -1145,7 +1152,7 @@
 
   // ================= AYAR PANELİ =================
   const SW = [
-    ['steady', 'Titreme kontrollü deklanşör', 'Telefon durgunlaşınca çeker (jiroskop)'],
+    ['steady', 'Titreme kontrollü deklanşör', 'Elinizin titreme düzeyini ölçer, en sakin anda çeker'],
     ['afLock', 'Dokununca odağı kilitle', 'Odak kendiliğinden kaymaz; açmak için "AF kilitli" rozetine dokunun'],
     ['refocus', 'Çekmeden önce yeniden odakla', 'Kapalı önerilir; açıkken her çekimde odak arar'],
     ['level', 'Ufuk çizgisi / su terazisi', 'Belge modunda telefon yatayken terazi çıkar'],
