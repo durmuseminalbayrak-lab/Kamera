@@ -412,8 +412,9 @@
   async function measure(nx, ny, n) { let s = 0; for (let i = 0; i < n; i++) { await frameT(); s += regionSharp(nx, ny); } return s / n; }
   // Diyoptri (1/metre) ekseninde kaba + ince tarama; en yüksek netliği verir
   async function focusSearch(Dlo, Dhi, setD, meas) {
-    let best = -1, bestD = Dlo; const N = 10, st = (Dhi - Dlo) / N;
-    for (let i = 0; i <= N; i++) { const D = Dlo + st * i; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
+    let best = -1, bestD = Dlo, worst = Infinity; const N = 10, st = (Dhi - Dlo) / N;
+    for (let i = 0; i <= N; i++) { const D = Dlo + st * i; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } if (s < worst) worst = s; }
+    focusSearch.contrast = worst > 0 ? best / worst : (best > 0 ? 99 : 1);
     const lo = Math.max(Dlo, bestD - st), hi = Math.min(Dhi, bestD + st);
     for (let i = 0; i <= 6; i++) { const D = lo + (hi - lo) * i / 6; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
     await setD(bestD);
@@ -431,8 +432,14 @@
       const D = await focusSearch(Dlo, Dhi,
         D => within(track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: clamp(1 / Math.max(D, 1e-4), fd.min, fd.max) }] }).catch(() => {}), 400),
         async () => { await settle(2); return measure(x, y, 2); });
+      if (focusSearch.contrast < 1.25) {
+        // Lens hareket etmedi ya da bölgede netlik farkı yok: sonuca güvenme, otomatik odağa dön
+        unlockAF();
+        toast('Odak ölçülemedi (fark: ' + focusSearch.contrast.toFixed(2) + '×). Otomatik odak kullanılıyor.\nDaha belirgin, desenli bir yere dokunmayı deneyin.', 4500);
+        return;
+      }
       const m = 1 / Math.max(D, 1e-4);
-      lockBadge('Odak ' + (m > 10 ? 'uzak' : m.toFixed(2) + ' m'));
+      lockBadge('Odak ' + (m > 10 ? 'uzak' : m.toFixed(2) + ' m') + ' · fark ' + focusSearch.contrast.toFixed(1) + '×');
       if (!S.afLock) setTimeout(() => { if (afLocked) unlockAF(); }, 4000);
       return;
     }
