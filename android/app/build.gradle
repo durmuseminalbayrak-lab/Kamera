@@ -44,3 +44,8 @@ android {
         abortOnError false
     }
 }
+
+dependencies {
+    // Barkod / QR okuma (yalnızca hesaplama; internet kullanmaz)
+    implementation 'com.google.zxing:core:3.5.3'
+}
