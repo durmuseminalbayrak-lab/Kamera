@@ -325,8 +325,8 @@
     $('bFlash').textContent = 'Flaş: kapalı'; $('bFlash').classList.remove('act');
   }
   async function openCamera() {
-    stopStream(); afLocked = false; $('afBadge').style.display = 'none';
-    let w = 1920, h = 1080;
+    stopStream(); afLocked = false; focusPt = null; $('afBadge').style.display = 'none';
+    let w = mode === 'scan' ? 1920 : 3840, h = mode === 'scan' ? 1080 : 2160;
     if (mode === 'video') { w = VRES[S.vres].w; h = VRES[S.vres].h; }
     else if (mode === 'night') { w = 3840; h = 2160; }
     const base = { width: { ideal: w }, height: { ideal: h } };
@@ -422,7 +422,9 @@
   }
   const POI_MAPS = [p => p, p => ({ x: p.y, y: 1 - p.x }), p => ({ x: 1 - p.y, y: p.x })];
   function lockBadge(txt) { afLocked = true; $('afBadge').textContent = txt + ' ✕'; $('afBadge').style.display = 'block'; }
+  let focusPt = null;
   async function tapFocus(x, y) {
+    focusPt = { x, y };
     const c = track._caps || {}, has = v => c.focusMode && c.focusMode.includes(v);
     if (mode === 'pro') { if (c.pointsOfInterest) await track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }] }] }); return; }
     // 1) Elle odak destekleniyorsa: kendi kontrast odağımız (en güvenilir)
@@ -465,6 +467,7 @@
 
   let afLocked = false;
   function unlockAF() {
+    focusPt = null;
     afLocked = false; $('afBadge').style.display = 'none';
     const c = (track && track._caps) || {};
     if (track && mode !== 'pro' && c.focusMode && c.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
@@ -815,7 +818,33 @@
     }
     return { blob, how };
   }
+  // Ekranda görünen (doğru odaklı) önizlemeden hızlı kareler alır, odak bölgesi en net olanı tutar
+  async function previewBurst(k) {
+    const vw = video.videoWidth, vh = video.videoHeight; if (!vw) return null;
+    const fp = focusPt || { x: 0.5, y: 0.5 }, [c, x] = mk(vw, vh); let best = -1;
+    for (let i = 0; i < k; i++) {
+      await frameT();
+      const sh = regionSharp(fp.x, fp.y);
+      if (sh > best) { best = sh; x.drawImage(video, 0, 0, vw, vh); }
+    }
+    return c;
+  }
+  // Fotoğraf ve önizleme karesinin netliğini aynı ölçekte, odak bölgesinde ölçer
+  async function sharpAt(src, fp, vw, vh) {
+    const isBlob = src instanceof Blob, bm = isBlob ? await createImageBitmap(src) : src;
+    const w0 = bm.width, h0 = bm.height, k = 600 / Math.min(w0, h0), w = w0 * k, h = h0 * k;
+    const same = (w0 > h0) === (vw > vh), kv = 600 / Math.min(vw, vh);
+    const ox = same ? (fp.x - 0.5) * vw * kv : 0, oy = same ? (fp.y - 0.5) * vh * kv : 0, S2 = 150;
+    const sx = clamp(w / 2 + ox - S2 / 2, 0, w - S2), sy = clamp(h / 2 + oy - S2 / 2, 0, h - S2);
+    const [c, x] = mk(S2, S2); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    x.drawImage(bm, sx / k, sy / k, S2 / k, S2 / k, 0, 0, S2, S2);
+    if (isBlob) bm.close();
+    return lapVar(toGray(x.getImageData(0, 0, S2, S2).data, S2 * S2), S2, S2);
+  }
   async function takeBest(n) {
+    const fp = focusPt || { x: 0.5, y: 0.5 }, vw = video.videoWidth, vh = video.videoHeight;
+    showBusy('Çekiliyor…');
+    const pv = await previewBurst(6);
     await refocus();
     const shots = [];
     for (let i = 0; i < n; i++) {
@@ -826,9 +855,17 @@
     let best = shots[0], bs = -1;
     if (n > 1) {
       showBusy('En net kare seçiliyor…');
-      for (const r of shots) { let s = 0; try { s = await blobSharp(r.blob); } catch (e) {} if (s > bs) { bs = s; best = r; } }
+      for (const r of shots) { let sc = 0; try { sc = await blobSharp(r.blob); } catch (e) {} if (sc > bs) { bs = sc; best = r; } }
+      best.how += ' · ' + n + ' kareden en neti';
     }
-    if (n > 1) best.how += ' · ' + n + ' kareden en neti';
+    // Güvence: tam fotoğraf ekranda görünenden belirgin biçimde bulanıksa, net önizleme karesini kullan
+    if (pv && vw) {
+      try {
+        const ps = await sharpAt(best.blob, fp, vw, vh), vs = await sharpAt(pv, fp, vw, vh);
+        best.cmp = { ps, vs };
+        if (ps < vs * 0.6) return { blob: await toJpeg(pv, 0.95), how: 'ekrandaki net görüntü (tam fotoğraf bulanık çıktı, ' + (ps / Math.max(vs, 1) * 100 | 0) + '%)', cmp: best.cmp };
+      } catch (e) {}
+    }
     return best;
   }
 
@@ -1302,7 +1339,7 @@
     else if (started()) { openCamera().then(() => { if (mode === 'scan') startScan(); }).catch(() => {}); if (S.voice) voiceOn(); }
   });
 
-  if (/[?&]test\b/.test(location.search)) window.__kameraTest = { focusSearch, regionSharp, detectDoc, warpQuad, makePdf, buildExif, withExif, filt, toGray, mk, S, M, orderQuad, lapVar };
+  if (/[?&]test\b/.test(location.search)) window.__kameraTest = { sharpAt, previewBurst, focusSearch, regionSharp, detectDoc, warpQuad, makePdf, buildExif, withExif, filt, toGray, mk, S, M, orderQuad, lapVar };
 })();
 </script>
 </body>
