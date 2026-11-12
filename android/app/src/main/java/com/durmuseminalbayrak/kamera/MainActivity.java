@@ -167,6 +167,8 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
     private volatile long flashUntil = 0;
     private volatile boolean autoNight = false;
     private volatile float nightGain = 1f;
+    private volatile float previewY = 0f;
+    private static final double NIGHT_TARGET_Y = 115;
     private volatile String camInfo = "";
     private volatile int captureToken = 0;
     private volatile boolean framesDone = false;
@@ -1028,7 +1030,7 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
             b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
             if (mode == M_PRO && evRange != null) b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, proEv);
             if (mode == M_VIDEO) { if (fps30 != null) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps30); }
-            else if (shortExp && fastFps != null) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fastFps);
+            else if (shortExp && fastFps != null && !(mode == M_GECE || (mode == M_OTO && autoNight))) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fastFps);
         }
         if (mode == M_PRO && proManualFocus && hasAfOff && minFocus > 0) {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
@@ -1117,7 +1119,9 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
             if (e != null && iso != null) {
                 double ms = e / 1e6;
                 // Işık ölçümü: uzun pozlama ya da yüksek ISO = karanlık (eşikler arasında boşluk: titreşmesin)
+                boolean was = autoNight;
                 autoNight = autoNight ? (ms >= 22 || iso >= 700) : (ms >= 30 || iso >= 1000);
+                if (was != autoNight && mode == M_OTO) updatePreview();
             }
         }
     };
@@ -1320,18 +1324,26 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         int tIso = 0;
         boolean manual = false;
         if (manualSensor && e0 != null && s0 != null && expRange != null && isoRange != null && !(mode == M_PRO)) {
+            // Hedef ışık: önizleme karanlıksa (pozlama sınırı / ISO tavanı) gerçek parlaklığa göre artır
+            double P0 = s0 * (double) e0, F = 1;
+            float py = previewY;
+            if (py > 1) F = Math.pow(NIGHT_TARGET_Y / Math.max(py, 4.0), 2.2);
+            F = Math.max(0.7, Math.min(16, F));
+            double P = P0 * F;
+            // Titreme sınırı: kare başına en fazla ~2,5 piksel kayma
             float tgt = hasGyro ? Math.max(1f, steadyTarget()) : 3f;
             double pxPerDeg = Math.max(jpegSize.getWidth(), jpegSize.getHeight()) / Math.max(30.0, hFov);
-            double maxS = 2.5 / (tgt * pxPerDeg);
-            maxS = Math.max(1 / 250.0, Math.min(1 / 20.0, maxS));
-            tExp = Math.min(e0, (long) (maxS * 1e9));
+            double maxS = Math.max(1 / 250.0, Math.min(1 / 15.0, 2.5 / (tgt * pxPerDeg)));
+            double need = P / isoRange.getLower();   // en düşük ISO'da gereken süre
+            tExp = (long) Math.min(maxS * 1e9, need);
             tExp = Math.max(expRange.getLower(), Math.min(expRange.getUpper(), tExp));
-            long iso = Math.round(s0 * (double) e0 / tExp);
+            long iso = Math.round(P / tExp);
             tIso = (int) Math.max(isoRange.getLower(), Math.min(isoRange.getUpper(), iso));
-            n = (int) Math.max(6, Math.min(8, Math.ceil(3.0 * e0 / tExp)));
+            boolean dark = py < 90 || tIso >= 1600 || F > 1.5;
+            n = dark ? 8 : 6;
             manual = true;
-            // ISO tavana dayandıysa eksik kalan ışık, birleştirmeden sonra geri verilir
-            nightGain = (float) Math.max(1.0, Math.min(4.0, (s0 * (double) e0) / ((double) tIso * tExp)));
+            // ISO tavanı yüzünden eksik kalan ışık birleştirmeden sonra geri verilir (kareler birleşince gürültü azaldığı için)
+            nightGain = (float) Math.max(1.0, Math.min(4.0, P / ((double) tIso * tExp)));
         } else {
             nightGain = 1f;
         }
@@ -1346,7 +1358,7 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
             }
             reqs.add(sb.build());
         }
-        busyMsg = "Gece: " + n + " kare çekiliyor\nsabit tutun" + (manual ? "\n(" + fmtExp(tExp) + " · ISO " + tIso + ")" : "");
+        busyMsg = "Gece: " + n + " kare çekiliyor\nsabit tutun" + (manual ? "\n(" + fmtExp(tExp) + " · ISO " + tIso + (nightGain > 1.05f ? String.format(Locale.US, " · +%.1fx", nightGain) : "") + ")" : "");
         flashUntil = SystemClock.uptimeMillis() + 120;
         vib(25);
         armWatchdog();
@@ -1616,12 +1628,22 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
             long now = SystemClock.uptimeMillis();
             boolean needDoc = mode == M_BELGE || (mode == M_OTO && docHint);
             boolean needScan = mode == M_BARKOD;
-            if (!(hist || zebra || needDoc || needScan) || capturing || now - lastAna < 110) return;
+            boolean needLuma = mode == M_OTO || mode == M_GECE;
+            if (!(hist || zebra || needDoc || needScan || needLuma) || capturing || now - lastAna < 110) return;
             lastAna = now;
             int w = img.getWidth(), h = img.getHeight();
             Image.Plane yp = img.getPlanes()[0];
             ByteBuffer buf = yp.getBuffer();
             int rs = yp.getRowStride(), ps = yp.getPixelStride();
+            if (needLuma) {
+                // Ekrandaki görüntünün gerçek parlaklığı (orta %80, seyrek örnek)
+                long sum = 0, cnt = 0;
+                for (int yy = h / 10; yy < h * 9 / 10; yy += 8) {
+                    for (int xx = w / 10; xx < w * 9 / 10; xx += 8) { sum += buf.get(yy * rs + xx * ps) & 255; cnt++; }
+                }
+                if (cnt > 0) previewY = previewY <= 0 ? (float) sum / cnt : previewY * 0.6f + 0.4f * sum / cnt;
+                if (!(hist || zebra || needDoc || needScan)) return;
+            }
             if (yBuf == null || yBuf.length != w * h) yBuf = new byte[w * h];
             byte[] y = yBuf;
             if (ps == 1) {

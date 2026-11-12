@@ -616,7 +616,7 @@ final class ImageTools {
         int[] lh = new int[256];
         for (int i = 0; i < n; i += 7) lh[luma(px[i])]++;
         int med = Math.max(1, percentile(lh, (n + 6) / 7, 0.5));
-        if (autoLift && med * g < 85) g *= Math.min(1.4f, 85f / (med * g));
+        if (autoLift && med * g < 95) g *= Math.min(1.5f, 95f / (med * g));
         if (g > 1.01f) {
             int[] lut = new int[256];
             for (int v = 0; v < 256; v++) {
