@@ -166,6 +166,8 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
     private volatile String busyMsg = null;
     private volatile long flashUntil = 0;
     private volatile boolean autoNight = false;
+    private volatile float nightGain = 1f;
+    private volatile String camInfo = "";
     private volatile int captureToken = 0;
     private volatile boolean framesDone = false;
     private boolean pendingRecord = false;
@@ -735,6 +737,13 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
             prefs.edit().putInt("vres", v).apply();
             if (mode == M_VIDEO) reopen();
         });
+        TextView ci = new TextView(this);
+        ci.setText("Kamera bilgisi\n" + camInfo);
+        ci.setTextColor(0xBBFFFFFF);
+        ci.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        ci.setTextIsSelectable(true);
+        ci.setPadding(0, dp(14), 0, 0);
+        setList.addView(ci);
         TextView note = new TextView(this);
         note.setText("Bu uygulamanın internet izni yoktur; fotoğraflar yalnızca telefonunuzda kalır.\nFotoğraf ve videolar: Galeri → DCIM/Kamera. PDF'ler: İndirilenler/Kamera.");
         note.setTextColor(0x88FFFFFF);
@@ -791,7 +800,13 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         Size[] s = sizes.clone();
         Arrays.sort(s, (a, b) -> Long.compare((long) b.getWidth() * b.getHeight(), (long) a.getWidth() * a.getHeight()));
         if (max) return s[0];
-        for (Size z : s) if ((long) z.getWidth() * z.getHeight() <= 13_000_000L && Math.abs(ratio(z) - 4.0 / 3.0) < 0.02) return z;
+        for (Size z : s) if ((long) z.getWidth() * z.getHeight() <= 13_000_000L && Math.abs(ratio(z) - 4.0 / 3.0) < 0.03) return z;
+        // 12 MP civarı 4:3 yoksa: 50 MP'ye kadar en küçük 4:3 (önizlemeyle aynı kadraj)
+        for (int i = s.length - 1; i >= 0; i--) {
+            Size z = s[i];
+            long a = (long) z.getWidth() * z.getHeight();
+            if (a > 13_000_000L && a <= 50_000_000L && Math.abs(ratio(z) - 4.0 / 3.0) < 0.03) return z;
+        }
         for (Size z : s) if ((long) z.getWidth() * z.getHeight() <= 13_000_000L) return z;
         return s[0];
     }
@@ -799,7 +814,7 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
     private static Size pickPreview(Size[] sizes, double r, int maxW, int maxH) {
         Size best = null;
         for (Size z : sizes) {
-            if (z.getWidth() > maxW || z.getHeight() > maxH || Math.abs(ratio(z) - r) > 0.02) continue;
+            if (z.getWidth() > maxW || z.getHeight() > maxH || Math.abs(ratio(z) - r) > 0.03) continue;
             if (best == null || (long) z.getWidth() * z.getHeight() > (long) best.getWidth() * best.getHeight()) best = z;
         }
         if (best != null) return best;
@@ -924,6 +939,7 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
                 anaReader = ImageReader.newInstance(anaSize.getWidth(), anaSize.getHeight(), ImageFormat.YUV_420_888, 3);
                 anaReader.setOnImageAvailableListener(onAna, anaH);
             }
+            camInfo = describeCamera(map);
             final int newH = Math.round(screenW * (float) previewSize.getWidth() / previewSize.getHeight());
             ui.post(() -> { relayout(newH); buildZoomRow(); buildPro(); bSwitch.setText(camIds.size() > 1 ? "⟲ " + (front ? "Ön" : "Arka " + (camIndex + 1)) : "⟲ Kamera"); });
             cm.openCamera(camId, devCb, bg);
@@ -932,6 +948,30 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         } catch (Exception e) {
             toast("Kamera açılamadı: " + e.getMessage());
         }
+    }
+
+    private String describeCamera(StreamConfigurationMap map) {
+        StringBuilder b = new StringBuilder();
+        Integer lvl = ch.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+        String[] lv = {"LIMITED", "FULL", "LEGACY", "LEVEL_3", "EXTERNAL"};
+        b.append("Kamera ").append(camId).append(front ? " (ön)" : " (arka)").append(" · donanım: ")
+                .append(lvl != null && lvl >= 0 && lvl < lv.length ? lv[lvl] : String.valueOf(lvl)).append('\n');
+        b.append("Fotoğraf: ").append(jpegSize).append(" · önizleme: ").append(previewSize);
+        if (anaSize != null) b.append(" · analiz: ").append(anaSize);
+        if (videoSize != null && mode == M_VIDEO) b.append(" · video: ").append(videoSize);
+        b.append('\n');
+        Size[] js = map.getOutputSizes(ImageFormat.JPEG);
+        Arrays.sort(js, (a, c) -> Long.compare((long) c.getWidth() * c.getHeight(), (long) a.getWidth() * a.getHeight()));
+        b.append("JPEG boyutları: ");
+        for (int i = 0; i < Math.min(js.length, 10); i++) b.append(i > 0 ? ", " : "").append(js[i]);
+        if (js.length > 10) b.append(" … (").append(js.length).append(")");
+        b.append('\n');
+        b.append("Elle ayar: ").append(manualSensor ? "var" : "yok");
+        if (isoRange != null) b.append(" · ISO ").append(isoRange.getLower()).append("–").append(isoRange.getUpper());
+        if (expRange != null) b.append(" · pozlama ").append(fmtExp(expRange.getLower())).append("–").append(fmtExp(expRange.getUpper()));
+        b.append('\n');
+        b.append(String.format(Locale.US, "Görüş açısı %.0f° · zoom %.1f–%.1fx · odak min %.2f m", hFov, zMin(), zMax(), minFocus > 0 ? 1 / minFocus : 0f));
+        return b.toString();
     }
 
     private void closeCamera() {
@@ -1282,14 +1322,18 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         if (manualSensor && e0 != null && s0 != null && expRange != null && isoRange != null && !(mode == M_PRO)) {
             float tgt = hasGyro ? Math.max(1f, steadyTarget()) : 3f;
             double pxPerDeg = Math.max(jpegSize.getWidth(), jpegSize.getHeight()) / Math.max(30.0, hFov);
-            double maxS = 2.0 / (tgt * pxPerDeg);
+            double maxS = 2.5 / (tgt * pxPerDeg);
             maxS = Math.max(1 / 250.0, Math.min(1 / 20.0, maxS));
             tExp = Math.min(e0, (long) (maxS * 1e9));
             tExp = Math.max(expRange.getLower(), Math.min(expRange.getUpper(), tExp));
             long iso = Math.round(s0 * (double) e0 / tExp);
             tIso = (int) Math.max(isoRange.getLower(), Math.min(isoRange.getUpper(), iso));
-            n = (int) Math.max(4, Math.min(8, Math.ceil(2.0 * e0 / tExp)));
+            n = (int) Math.max(6, Math.min(8, Math.ceil(3.0 * e0 / tExp)));
             manual = true;
+            // ISO tavana dayandıysa eksik kalan ışık, birleştirmeden sonra geri verilir
+            nightGain = (float) Math.max(1.0, Math.min(4.0, (s0 * (double) e0) / ((double) tIso * tExp)));
+        } else {
+            nightGain = 1f;
         }
         synchronized (shots) { shots.clear(); expected = n; failed = 0; job = JOB_NIGHT; }
         List<CaptureRequest> reqs = new ArrayList<>();
@@ -1406,7 +1450,7 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         final double[] shf = sh;
         Arrays.sort(order, (a, b) -> Double.compare(shf[b], shf[a]));
         List<byte[]> sel = new ArrayList<>();
-        for (int idx : order) if (sel.size() < 3 || sh[idx] >= mx * 0.6) sel.add(list.get(idx));
+        for (int idx : order) if (sel.size() < 3 || sh[idx] >= mx * 0.55) sel.add(list.get(idx));
 
         int orientation = exifOrientation(sel.get(0));
         BitmapFactory.Options bo = new BitmapFactory.Options();
@@ -1432,9 +1476,10 @@ public class MainActivity extends Activity implements SensorEventListener, DocEd
         }
         if (m == null) throw new Exception("kareler açılamadı");
         buf = null;
-        busyMsg = "Gece: son düzeltmeler…";
+        busyMsg = "Gece: gürültü azaltılıyor…";
         int[] res = m.result();
         m = null;
+        ImageTools.finishNight(res, w, h, nightGain);
         Bitmap rb = Bitmap.createBitmap(res, w, h, Bitmap.Config.ARGB_8888);
         res = null;
         ByteArrayOutputStream bos = new ByteArrayOutputStream();

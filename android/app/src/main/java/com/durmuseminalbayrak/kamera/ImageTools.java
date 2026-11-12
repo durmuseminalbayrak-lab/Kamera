@@ -550,31 +550,153 @@ final class ImageTools {
             count++;
         }
 
-        /** Ortalama + hafif ton ayarı (karanlıksa aydınlatır). Bellek için biriktiricileri bırakır. */
+        /** Düz ortalama. Bellek için biriktiricileri bırakır. */
         int[] result() {
             int n = w * h;
-            int[] hist = new int[256];
-            for (int i = 0; i < n; i++) {
-                int l = ((ar[i] * 77 + ag[i] * 150 + ab[i] * 29) / count) >> 8;
-                hist[clamp(l, 0, 255)]++;
-            }
-            int hi = Math.max(1, percentile(hist, n, 0.995));
-            float gain = clampf(235f / hi, 1f, 3f);
-            float gamma = gain > 1.3f ? 0.9f : 1f;
-            int[] lut = new int[256 * 8 + 1];
-            float div = count;
-            for (int v = 0; v < lut.length; v++) {
-                float a = v / div * gain / 255f;
-                lut[v] = clamp(Math.round(255f * (float) Math.pow(clampf(a, 0, 1), gamma)), 0, 255);
-            }
             int[] out = new int[n];
+            int c = Math.max(1, count), half = c / 2;
             for (int i = 0; i < n; i++) {
-                out[i] = 0xFF000000 | (lut[ar[i]] << 16) | (lut[ag[i]] << 8) | lut[ab[i]];
+                out[i] = 0xFF000000 | (((ar[i] + half) / c) << 16) | (((ag[i] + half) / c) << 8) | ((ab[i] + half) / c);
             }
             ar = ag = ab = null;
             refFull = ref2 = ref8 = null;
             return out;
         }
+    }
+
+    // ---------------- Gece son işlem: parlaklık, gürültü azaltma, keskinleştirme ----------------
+    /**
+     * Parlaklık gürültüsünü tahmin eder: 16x16 bloklarda (piksel - 5x5 ortalama) standart sapması,
+     * en düz %20'lik blokların değeri. Telefonun işlemesiyle kümelenmiş gürültüyü de yakalar.
+     */
+    static float estimateNoise(int[] px, int w, int h) {
+        int B = 16, stride = Math.max(24, Math.min(w, h) / 60);
+        float[] vals = new float[((w / stride) + 1) * ((h / stride) + 1)];
+        int nv = 0;
+        for (int by = 2; by + B + 2 < h; by += stride) {
+            for (int bx = 2; bx + B + 2 < w; bx += stride) {
+                double s = 0, s2 = 0;
+                for (int y = by; y < by + B; y++) {
+                    for (int x = bx; x < bx + B; x++) {
+                        int m = 0;
+                        for (int dy = -2; dy <= 2; dy++) {
+                            int row = (y + dy) * w;
+                            for (int dx = -2; dx <= 2; dx++) m += luma(px[row + x + dx]);
+                        }
+                        double d = luma(px[y * w + x]) - m / 25.0;
+                        s += d;
+                        s2 += d * d;
+                    }
+                }
+                int n = B * B;
+                double mean = s / n;
+                vals[nv++] = (float) Math.sqrt(Math.max(0, s2 / n - mean * mean));
+            }
+        }
+        if (nv == 0) return 0;
+        float[] v = Arrays.copyOf(vals, nv);
+        Arrays.sort(v);
+        return v[(int) (nv * 0.2f)];
+    }
+
+    private static int luma(int c) { return (((c >> 16) & 255) * 77 + ((c >> 8) & 255) * 150 + (c & 255) * 29) >> 8; }
+
+    /**
+     * expoGain: pozlama kaybı (doğrusal ışık oranı, >=1). Parlaklığı geri verir, parlak yerleri yumuşakça korur,
+     * parlaklık gürültüsünü kenarları koruyarak azaltır (yönlendirmeli filtre), renk gürültüsünü siler, hafif keskinleştirir.
+     */
+    static void finishNight(int[] px, int w, int h, float expoGain) {
+        finishNight(px, w, h, expoGain, 2.0f, 0.25f, 2, 4, true);
+    }
+
+    static void finishNight(int[] px, int w, int h, float expoGain, float epsK, float sharpen, int chromaR, int R, boolean autoLift) {
+        int n = w * h;
+        // 1) Parlaklık: ışık oranını gama uzayına çevir; çok karanlıksa medyanı biraz kaldır
+        float g = (float) Math.pow(Math.max(1f, Math.min(4f, expoGain)), 1 / 2.2);
+        int[] lh = new int[256];
+        for (int i = 0; i < n; i += 7) lh[luma(px[i])]++;
+        int med = Math.max(1, percentile(lh, (n + 6) / 7, 0.5));
+        if (autoLift && med * g < 85) g *= Math.min(1.4f, 85f / (med * g));
+        if (g > 1.01f) {
+            int[] lut = new int[256];
+            for (int v = 0; v < 256; v++) {
+                float x = v * g;
+                lut[v] = clamp(Math.round(x <= 200 ? x : 200 + 55 * (float) Math.tanh((x - 200) / 55)), 0, 255);
+            }
+            for (int i = 0; i < n; i++) {
+                int c = px[i];
+                px[i] = 0xFF000000 | (lut[(c >> 16) & 255] << 16) | (lut[(c >> 8) & 255] << 8) | lut[c & 255];
+            }
+        }
+        // 2) Gürültü azaltma + keskinleştirme (bellek için şeritler hâlinde)
+        float sigma = estimateNoise(px, w, h);
+        if (sigma < 0.6f || epsK <= 0) return;
+        float eps = (epsK * sigma) * (epsK * sigma);
+        int RC = Math.max(0, chromaR), M = 2 * R + Math.max(RC, 1) + 2, STRIP = 128;
+        for (int y0 = 0; y0 < h; y0 += STRIP) {
+            int y1 = Math.min(h, y0 + STRIP), s0 = Math.max(0, y0 - M), s1 = Math.min(h, y1 + M), SH = s1 - s0, SN = w * SH;
+            float[] Y = new float[SN], Cb = new float[SN], Cr = new float[SN];
+            for (int i = 0; i < SN; i++) {
+                int c = px[s0 * w + i];
+                float r = (c >> 16) & 255, gg = (c >> 8) & 255, b = c & 255;
+                float yy = 0.299f * r + 0.587f * gg + 0.114f * b;
+                Y[i] = yy;
+                Cb[i] = b - yy;
+                Cr[i] = r - yy;
+            }
+            float[] mI = box(Y, w, SH, R), YY = new float[SN];
+            for (int i = 0; i < SN; i++) YY[i] = Y[i] * Y[i];
+            float[] mII = box(YY, w, SH, R);
+            YY = null;
+            float[] A = new float[SN], B = new float[SN];
+            for (int i = 0; i < SN; i++) {
+                float var = Math.max(0, mII[i] - mI[i] * mI[i]);
+                float a = var / (var + eps);
+                A[i] = a;
+                B[i] = mI[i] * (1 - a);
+            }
+            mI = mII = null;
+            float[] mA = box(A, w, SH, R), mB = box(B, w, SH, R);
+            A = B = null;
+            float[] Q = new float[SN];
+            for (int i = 0; i < SN; i++) Q[i] = mA[i] * Y[i] + mB[i];
+            mA = mB = null;
+            float[] Qb = sharpen > 0 ? box(Q, w, SH, 1) : Q;
+            float[] cb = RC > 0 ? box(Cb, w, SH, RC) : Cb, cr = RC > 0 ? box(Cr, w, SH, RC) : Cr;
+            for (int yy = y0; yy < y1; yy++) {
+                int si = (yy - s0) * w, di = yy * w;
+                for (int x = 0; x < w; x++, si++, di++) {
+                    float yo = Q[si] + sharpen * (Q[si] - Qb[si]);
+                    float r = yo + cr[si], b = yo + cb[si];
+                    float gg = (yo - 0.299f * r - 0.114f * b) / 0.587f;
+                    px[di] = 0xFF000000 | (clamp(Math.round(r), 0, 255) << 16) | (clamp(Math.round(gg), 0, 255) << 8) | clamp(Math.round(b), 0, 255);
+                }
+            }
+        }
+    }
+
+    /** Kutu ortalaması (kenarlarda pencere kırpılır), integral görüntüyle */
+    static float[] box(float[] src, int w, int h, int r) {
+        int W = w + 1;
+        double[] I = new double[W * (h + 1)];
+        for (int y = 0; y < h; y++) {
+            double s = 0;
+            int row = y * w, ir = (y + 1) * W, pr = y * W;
+            for (int x = 0; x < w; x++) {
+                s += src[row + x];
+                I[ir + x + 1] = I[pr + x + 1] + s;
+            }
+        }
+        float[] o = new float[w * h];
+        for (int y = 0; y < h; y++) {
+            int ya = Math.max(0, y - r), yb = Math.min(h, y + r + 1);
+            for (int x = 0; x < w; x++) {
+                int xa = Math.max(0, x - r), xb = Math.min(w, x + r + 1);
+                double sum = I[yb * W + xb] - I[ya * W + xb] - I[yb * W + xa] + I[ya * W + xa];
+                o[y * w + x] = (float) (sum / ((xb - xa) * (yb - ya)));
+            }
+        }
+        return o;
     }
 
     // ---------------- PDF (JPEG sayfaları doğrudan gömülü) ----------------
