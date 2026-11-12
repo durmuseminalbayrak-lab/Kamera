@@ -35,6 +35,7 @@
   #top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 6px; justify-content: space-between; padding: max(10px, env(safe-area-inset-top)) 10px 8px; background: linear-gradient(rgba(0,0,0,.65), transparent); z-index: 2; font-size: 14px; }
   #steady { position: absolute; left: 10px; top: 64px; display: none; align-items: center; gap: 6px; font-size: 12px; background: rgba(0,0,0,.5); padding: 4px 9px; border-radius: 12px; pointer-events: none; }
   #steady i { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
+  #afBadge { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); display: none; z-index: 2; background: rgba(255,213,74,.9); color: #000; font-size: 13px; min-height: 34px; padding: 6px 12px; }
   #busy { position: absolute; left: 50%; top: 45%; transform: translate(-50%,-50%); background: rgba(0,0,0,.75); padding: 12px 20px; border-radius: 14px; font-size: 20px; display: none; z-index: 3; text-align: center; pointer-events: none; }
   #info { position: absolute; left: 10px; bottom: 8px; font-size: 11px; opacity: .8; text-shadow: 0 0 4px #000; pointer-events: none; max-width: 70%; }
   #rec { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); background: #d32f2f; padding: 3px 12px; border-radius: 12px; font-size: 14px; display: none; }
@@ -108,6 +109,7 @@
       <button id="bSet">⚙ Ayarlar</button>
     </div>
     <div id="steady"><i></i><span>Sabit</span></div>
+    <button id="afBadge">AF kilitli ✕</button>
     <div id="rec">● 00:00</div>
     <div id="busy"></div>
     <div id="info"></div>
@@ -172,7 +174,7 @@
   const toJpeg = (c, q) => new Promise(r => c.toBlob(r, 'image/jpeg', q || 0.92));
 
   // ================= AYARLAR =================
-  const DEF = { grid: false, level: true, hist: false, zebra: false, thermal: false, voice: false, geo: false, steady: true, burst: 3, photoQ: 0, vres: 1 };
+  const DEF = { afLock: true, refocus: false, grid: false, level: true, hist: false, zebra: false, thermal: false, voice: false, geo: false, steady: true, burst: 3, photoQ: 0, vres: 1 };
   const S = Object.assign({}, DEF);
   try { Object.assign(S, JSON.parse(localStorage.getItem('kamera-ayar') || '{}')); } catch (e) {}
   const saveS = () => { try { localStorage.setItem('kamera-ayar', JSON.stringify(S)); } catch (e) {} };
@@ -316,7 +318,7 @@
     $('bFlash').textContent = 'Flaş: kapalı'; $('bFlash').classList.remove('act');
   }
   async function openCamera() {
-    stopStream();
+    stopStream(); afLocked = false; $('afBadge').style.display = 'none';
     let w = 1920, h = 1080;
     if (mode === 'video') { w = VRES[S.vres].w; h = VRES[S.vres].h; }
     else if (mode === 'night') { w = 3840; h = 2160; }
@@ -385,10 +387,19 @@
       if (caps.focusMode && caps.focusMode.includes('single-shot') && mode !== 'pro') adv.focusMode = 'single-shot';
       if (Object.keys(adv).length) {
         await track.applyConstraints({ advanced: [adv] });
-        setTimeout(() => { if (track && mode !== 'pro' && caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 3500);
+        if (S.afLock && mode !== 'pro') { afLocked = true; $('afBadge').style.display = 'block'; }
+        else setTimeout(() => { if (track && !afLocked && mode !== 'pro' && caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 3500);
       }
     } catch (err) {}
   });
+
+  let afLocked = false;
+  function unlockAF() {
+    afLocked = false; $('afBadge').style.display = 'none';
+    const c = (track && track._caps) || {};
+    if (track && mode !== 'pro' && c.focusMode && c.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+  $('afBadge').addEventListener('click', unlockAF);
 
   $('zoom').addEventListener('input', async e => {
     $('zv').textContent = (+e.target.value).toFixed(1) + 'x';
@@ -699,13 +710,16 @@
   }
 
   // ================= FOTOĞRAF ÇEKİMİ =================
+  let didRefocus = false;
   async function refocus() {
+    didRefocus = false;
     const c = (track && track._caps) || {};
-    if (mode !== 'pro' && c.focusMode && c.focusMode.includes('single-shot')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); await sleep(700); } catch (e) {} }
+    if (S.refocus && !afLocked && mode !== 'pro' && c.focusMode && c.focusMode.includes('single-shot')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); didRefocus = true; await sleep(900); } catch (e) {} }
   }
   async function backToContinuous() {
     const c = (track && track._caps) || {};
-    if (mode !== 'pro' && c.focusMode && c.focusMode.includes('continuous')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {} }
+    if (didRefocus && !afLocked && mode !== 'pro' && c.focusMode && c.focusMode.includes('continuous')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {} }
+    didRefocus = false;
   }
   async function takeOne(q) {
     let blob = null, how = 'önizleme karesi';
@@ -733,15 +747,17 @@
   }
   async function takeBest(n) {
     await refocus();
-    let best = null, bs = -1;
+    const shots = [];
     for (let i = 0; i < n; i++) {
       if (n > 1) showBusy('Çekiliyor ' + (i + 1) + '/' + n);
-      const r = await takeOne(mode === 'doc' ? 0 : S.photoQ);
-      if (n === 1) { best = r; break; }
-      let s = 0; try { s = await blobSharp(r.blob); } catch (e) {}
-      if (s > bs) { bs = s; best = r; }
+      shots.push(await takeOne(mode === 'doc' ? 0 : S.photoQ));
     }
     await backToContinuous();
+    let best = shots[0], bs = -1;
+    if (n > 1) {
+      showBusy('En net kare seçiliyor…');
+      for (const r of shots) { let s = 0; try { s = await blobSharp(r.blob); } catch (e) {} if (s > bs) { bs = s; best = r; } }
+    }
     if (n > 1) best.how += ' · ' + n + ' kareden en neti';
     return best;
   }
@@ -1130,6 +1146,8 @@
   // ================= AYAR PANELİ =================
   const SW = [
     ['steady', 'Titreme kontrollü deklanşör', 'Telefon durgunlaşınca çeker (jiroskop)'],
+    ['afLock', 'Dokununca odağı kilitle', 'Odak kendiliğinden kaymaz; açmak için "AF kilitli" rozetine dokunun'],
+    ['refocus', 'Çekmeden önce yeniden odakla', 'Kapalı önerilir; açıkken her çekimde odak arar'],
     ['level', 'Ufuk çizgisi / su terazisi', 'Belge modunda telefon yatayken terazi çıkar'],
     ['grid', 'Izgara', ''],
     ['hist', 'Histogram', 'Kırmızı: aşırı parlak, mavi: aşırı karanlık'],
