@@ -386,19 +386,72 @@
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
     const ring = $('ring'), vr = $('view').getBoundingClientRect();
     ring.style.left = (e.clientX - vr.left) + 'px'; ring.style.top = (e.clientY - vr.top) + 'px';
-    ring.classList.add('on'); setTimeout(() => ring.classList.remove('on'), 900);
-    const caps = track._caps || {};
-    try {
-      const adv = {};
-      if (caps.pointsOfInterest) adv.pointsOfInterest = [{ x, y }];
-      if (caps.focusMode && caps.focusMode.includes('single-shot') && mode !== 'pro') adv.focusMode = 'single-shot';
-      if (Object.keys(adv).length) {
-        await track.applyConstraints({ advanced: [adv] });
-        if (S.afLock && mode !== 'pro') { afLocked = true; $('afBadge').style.display = 'block'; }
-        else setTimeout(() => { if (track && !afLocked && mode !== 'pro' && caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 3500);
-      }
-    } catch (err) {}
+    ring.classList.add('on');
+    if (focusing || busy) return;
+    focusing = true;
+    try { await tapFocus(x, y); } catch (err) {}
+    focusing = false; hideBusy(); ring.classList.remove('on');
   });
+
+  // ---- Kendi ölçümümüzle odaklama ----
+  // Telefonun odak noktası koordinatlarına güvenmek yerine, dokunulan bölgenin netliğini
+  // ekrandaki görüntüden ölçer ve en net odağı kendisi bulur.
+  let focusing = false;
+  const settle = async n => { for (let i = 0; i < n; i++) await nextFrame(); };
+  const [rC, rX] = mk(160, 160);
+  function regionSharp(nx, ny) {
+    const vw = video.videoWidth, vh = video.videoHeight; if (!vw) return 0;
+    const sz = Math.round(Math.min(vw, vh) * 0.2), out = Math.min(sz, 160);
+    const sx = clamp(Math.round(nx * vw - sz / 2), 0, vw - sz), sy = clamp(Math.round(ny * vh - sz / 2), 0, vh - sz);
+    rX.drawImage(video, sx, sy, sz, sz, 0, 0, out, out);
+    return lapVar(toGray(rX.getImageData(0, 0, out, out).data, out * out), out, out);
+  }
+  async function measure(nx, ny, n) { let s = 0; for (let i = 0; i < n; i++) { await nextFrame(); s += regionSharp(nx, ny); } return s / n; }
+  // Diyoptri (1/metre) ekseninde kaba + ince tarama; en yüksek netliği verir
+  async function focusSearch(Dlo, Dhi, setD, meas) {
+    let best = -1, bestD = Dlo; const N = 10, st = (Dhi - Dlo) / N;
+    for (let i = 0; i <= N; i++) { const D = Dlo + st * i; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
+    const lo = Math.max(Dlo, bestD - st), hi = Math.min(Dhi, bestD + st);
+    for (let i = 0; i <= 6; i++) { const D = lo + (hi - lo) * i / 6; await setD(D); const s = await meas(); if (s > best) { best = s; bestD = D; } }
+    await setD(bestD);
+    return bestD;
+  }
+  const POI_MAPS = [p => p, p => ({ x: p.y, y: 1 - p.x }), p => ({ x: 1 - p.y, y: p.x })];
+  function lockBadge(txt) { afLocked = true; $('afBadge').textContent = txt + ' ✕'; $('afBadge').style.display = 'block'; }
+  async function tapFocus(x, y) {
+    const c = track._caps || {}, has = v => c.focusMode && c.focusMode.includes(v);
+    if (mode === 'pro') { if (c.pointsOfInterest) await track.applyConstraints({ advanced: [{ pointsOfInterest: [{ x, y }] }] }); return; }
+    // 1) Elle odak destekleniyorsa: kendi kontrast odağımız (en güvenilir)
+    if (has('manual') && c.focusDistance && c.focusDistance.max > c.focusDistance.min) {
+      showBusy('Odaklanıyor…');
+      const fd = c.focusDistance, Dlo = 1 / Math.max(fd.max, 0.01), Dhi = 1 / Math.max(fd.min, 0.01);
+      const D = await focusSearch(Dlo, Dhi,
+        D => track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: clamp(1 / Math.max(D, 1e-4), fd.min, fd.max) }] }).catch(() => {}),
+        async () => { await settle(2); return measure(x, y, 2); });
+      const m = 1 / Math.max(D, 1e-4);
+      lockBadge('Odak ' + (m > 10 ? 'uzak' : m.toFixed(2) + ' m'));
+      if (!S.afLock) setTimeout(() => { if (afLocked) unlockAF(); }, 4000);
+      return;
+    }
+    // 2) Yalnızca odak noktası destekleniyorsa: doğru yönü bir kez öğren, sonra hep onu kullan
+    if (c.pointsOfInterest && has('single-shot')) {
+      let saved = -1; try { saved = +(localStorage.getItem('kamera-poi') ?? -1); } catch (e) {}
+      const tryMap = async i => { await track.applyConstraints({ advanced: [{ pointsOfInterest: [POI_MAPS[i]({ x, y })], focusMode: 'single-shot' }] }); await sleep(900); return measure(x, y, 3); };
+      if (saved >= 0 && saved < 3) await tryMap(saved);
+      else {
+        showBusy('Odak yönü öğreniliyor…');
+        const sc = []; for (let i = 0; i < 3; i++) sc.push(await tryMap(i));
+        const order = [0, 1, 2].sort((a, b) => sc[b] - sc[a]);
+        if (sc[order[0]] > sc[order[1]] * 1.3) { try { localStorage.setItem('kamera-poi', order[0]); } catch (e) {} }
+        await tryMap(order[0]);
+      }
+      if (S.afLock) lockBadge('AF kilitli');
+      else setTimeout(() => { if (track && !afLocked && has('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 3500);
+      return;
+    }
+    // 3) Hiçbiri yoksa: kamera dokunarak odaklamayı desteklemiyor
+    toast('Bu kamera Chrome\'a dokunarak odaklamayı açmıyor; otomatik odak kullanılıyor');
+  }
 
   let afLocked = false;
   function unlockAF() {
@@ -1188,6 +1241,14 @@
       row.append(L, sel); s.appendChild(row);
     });
   }
+  function addResetRow() {
+    const row = document.createElement('div'); row.className = 'row';
+    const L = document.createElement('div'); L.textContent = 'Dokunarak odak yönünü sıfırla';
+    const sm = document.createElement('small'); sm.textContent = 'Dokunduğunuz yere değil başka yere odaklıyorsa'; L.appendChild(sm);
+    const b = document.createElement('button'); b.textContent = 'Sıfırla';
+    b.addEventListener('click', () => { try { localStorage.removeItem('kamera-poi'); } catch (e) {} toast('Bir sonraki dokunuşta yeniden öğrenilecek'); });
+    row.append(L, b); $('sheetBody').appendChild(row);
+  }
   function syncSheet() { $('sheetBody').querySelectorAll('[data-k]').forEach(e => { if (e.type === 'checkbox') e.checked = !!S[e.dataset.k]; else e.value = S[e.dataset.k]; }); }
   function setOpt(k, v) { S[k] = v; saveS(); applyOpt(k); }
   function applyOpt(k) {
@@ -1203,7 +1264,7 @@
   $('bSet').addEventListener('click', () => openSheet(true));
   $('sheetClose').addEventListener('click', () => openSheet(false));
   $('sheetBack').addEventListener('click', () => openSheet(false));
-  buildSheet();
+  buildSheet(); addResetRow();
 
   // ================= BAŞLAT =================
   $('go').addEventListener('click', async () => {
@@ -1231,7 +1292,7 @@
     else if (started()) { openCamera().then(() => { if (mode === 'scan') startScan(); }).catch(() => {}); if (S.voice) voiceOn(); }
   });
 
-  if (/[?&]test\b/.test(location.search)) window.__kameraTest = { detectDoc, warpQuad, makePdf, buildExif, withExif, filt, toGray, mk, S, M, orderQuad, lapVar };
+  if (/[?&]test\b/.test(location.search)) window.__kameraTest = { focusSearch, regionSharp, detectDoc, warpQuad, makePdf, buildExif, withExif, filt, toGray, mk, S, M, orderQuad, lapVar };
 })();
 </script>
 </body>
