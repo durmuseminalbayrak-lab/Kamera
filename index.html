@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<!-- GÜVENLİK: default-src 'none' => bu sayfa internete HİÇBİR bağlantı kuramaz.
+     Görüntüler yalnızca telefonda kalır; dosya kendi kendine yeterlidir, dış script yoktur. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob: data:; media-src blob: mediastream:; manifest-src 'self'; worker-src 'self';">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Kamera</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; touch-action: manipulation; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  #view { position: relative; flex: 1; min-height: 0; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #grid { position: absolute; inset: 0; pointer-events: none; display: none;
+    background-image: linear-gradient(to right, transparent 33.2%, rgba(255,255,255,.35) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.35) 66.6%, transparent 66.8%),
+                      linear-gradient(to bottom, transparent 33.2%, rgba(255,255,255,.35) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.35) 66.6%, transparent 66.8%); }
+  #ring { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border: 2px solid #ffd54a; border-radius: 50%;
+    pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; transform: scale(1.4); }
+  #ring.on { opacity: 1; transform: scale(1); }
+  #top { position: absolute; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; font-size: 13px; padding: max(10px, env(safe-area-inset-top)) 12px 8px;
+    background: linear-gradient(#000a, transparent); }
+  #info { position: absolute; left: 12px; bottom: 10px; font-size: 12px; opacity: .85; text-shadow: 0 0 4px #000; }
+  #rec { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); background: #d32f2f; padding: 3px 12px; border-radius: 12px; font-size: 14px; display: none; }
+  #toast { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); background: #000c; padding: 8px 14px; border-radius: 10px; font-size: 14px; display: none; max-width: 90%; text-align: center; }
+  #bar { background: #000; padding: 8px 12px max(14px, env(safe-area-inset-bottom)); }
+  #zoomrow { display: none; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  #zoomrow input { flex: 1; }
+  #modes { display: flex; justify-content: center; gap: 22px; margin-bottom: 8px; font-size: 15px; }
+  #modes span { opacity: .55; padding: 4px 8px; }
+  #modes span.sel { opacity: 1; color: #ffd54a; font-weight: 600; }
+  #ctrl { display: flex; align-items: center; justify-content: space-between; }
+  button { font: inherit; color: #fff; background: #ffffff22; border: 0; border-radius: 22px; padding: 10px 14px; min-width: 44px; min-height: 44px; }
+  button.act { background: #ffd54a; color: #000; }
+  #shutter { width: 72px; height: 72px; border-radius: 50%; background: #fff; border: 5px solid #000; box-shadow: 0 0 0 3px #fff; padding: 0; }
+  #shutter.video { background: #d32f2f; }
+  #shutter.recording { border-radius: 14px; width: 60px; height: 60px; }
+  #thumb { width: 52px; height: 52px; border-radius: 10px; background: #222 center/cover no-repeat; border: 1px solid #fff5; padding: 0; min-width: 0; }
+  #start { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 5; }
+  #start button { background: #ffd54a; color: #000; font-weight: 700; padding: 14px 30px; font-size: 18px; }
+  #err { color: #ff8a80; font-size: 14px; white-space: pre-wrap; }
+  #panel { position: absolute; inset: 0; background: #000e; z-index: 4; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; }
+  #panel img, #panel video { max-width: 100%; max-height: 60%; object-fit: contain; }
+  #panel .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view">
+    <video id="v" playsinline muted autoplay></video>
+    <div id="grid"></div>
+    <div id="ring"></div>
+    <div id="top">
+      <button id="bFlash">Flaş: kapalı</button>
+      <button id="bGrid">Izgara</button>
+      <button id="bRes">Çözünürlük</button>
+      <button id="bQ">Foto: varsayılan</button>
+      <button id="bTimer">Zamanlayıcı: kapalı</button>
+    </div>
+    <div id="rec">● 00:00</div>
+    <div id="info"></div>
+    <div id="toast"></div>
+  </div>
+  <div id="bar">
+    <div id="zoomrow"><span>Yakınlaştır</span><input id="zoom" type="range"><span id="zv">1x</span></div>
+    <div id="modes"><span id="mPhoto" class="sel">FOTOĞRAF</span><span id="mVideo">VİDEO</span></div>
+    <div id="ctrl">
+      <button id="thumb" aria-label="Son çekim"></button>
+      <button id="shutter" aria-label="Çek"></button>
+      <button id="bCam">Kamera</button>
+    </div>
+  </div>
+
+  <div id="start">
+    <div style="font-size:22px;font-weight:700">Kamera</div>
+    <div style="opacity:.8;max-width:420px;font-size:14px">Bu sayfa internete bağlanamaz. Görüntüler yalnızca telefonunuzda kalır. Başlamak için kamera iznini vermeniz gerekir.</div>
+    <button id="go">Kamerayı aç</button>
+    <div id="err"></div>
+  </div>
+
+  <div id="panel">
+    <div id="pmedia"></div>
+    <div class="row">
+      <button id="pSave">Kaydet</button>
+      <button id="pShare">Paylaş / Galeriye</button>
+      <button id="pClose">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const video = $('v');
+
+  let stream = null, track = null, imageCapture = null;
+  let devices = [], devIndex = 0;
+  let mode = 'photo';           // 'photo' | 'video'
+  let torchOn = false;
+  let recorder = null, chunks = [], recTimer = null, recStart = 0, micStream = null;
+  let last = null;              // { blob, name, url, type }
+  const resOptions = [ { w: 1280, h: 720, t: '720p' }, { w: 1920, h: 1080, t: '1080p' }, { w: 3840, h: 2160, t: '4K' } ];
+  let resIdx = 1;
+
+  function toast(msg, ms) {
+    const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+    clearTimeout(toast._h); toast._h = setTimeout(() => t.style.display = 'none', ms || 2200);
+  }
+  function stamp() {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
+  async function listDevices() {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    devices = all.filter(d => d.kind === 'videoinput');
+    // arka kameralar önce
+    devices.sort((a, b) => {
+      const fa = /front|ön/i.test(a.label) ? 1 : 0, fb = /front|ön/i.test(b.label) ? 1 : 0;
+      return fa - fb;
+    });
+  }
+
+  function stopStream() {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null; track = null; imageCapture = null; torchOn = false;
+    $('bFlash').textContent = 'Flaş: kapalı'; $('bFlash').classList.remove('act');
+  }
+
+  async function openCamera() {
+    stopStream();
+    const r = resOptions[resIdx];
+    const wantVideo = mode === 'video';
+    const base = wantVideo ? { width: { ideal: r.w }, height: { ideal: r.h } } : { width: { ideal: 1920 }, height: { ideal: 1080 } };
+    let video_c;
+    if (devices.length && devices[devIndex] && devices[devIndex].deviceId) {
+      video_c = Object.assign({ deviceId: { exact: devices[devIndex].deviceId } }, base);
+    } else {
+      video_c = Object.assign({ facingMode: { ideal: 'environment' } }, base);
+    }
+    stream = await navigator.mediaDevices.getUserMedia({ video: video_c, audio: false });
+    track = stream.getVideoTracks()[0];
+    video.srcObject = stream;
+    try { await video.play(); } catch (e) {}
+    await listDevices(); // etiketler izinden sonra gelir
+    if (devices.length) {
+      const cur = track.getSettings().deviceId;
+      const i = devices.findIndex(d => d.deviceId === cur);
+      if (i >= 0) devIndex = i;
+    }
+    try { imageCapture = new ImageCapture(track); } catch (e) { imageCapture = null; }
+    await setupCaps();
+    updateInfo();
+  }
+
+  async function setupCaps() {
+    let caps = {};
+    try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+    // Sürekli otofokus
+    try {
+      if (caps.focusMode && caps.focusMode.includes('continuous')) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      }
+    } catch (e) {}
+    // Yakınlaştırma
+    const zr = $('zoomrow'), z = $('zoom');
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
+      z.value = (track.getSettings().zoom || caps.zoom.min);
+      $('zv').textContent = (+z.value).toFixed(1) + 'x';
+      zr.style.display = 'flex';
+    } else zr.style.display = 'none';
+    $('bFlash').style.display = caps.torch || mode === 'photo' ? '' : 'none';
+    track._caps = caps;
+  }
+
+  function updateInfo() {
+    const s = track ? track.getSettings() : {};
+    const label = devices[devIndex] && devices[devIndex].label ? devices[devIndex].label : '';
+    $('info').textContent = (s.width ? s.width + '×' + s.height : '') + (label ? '  ·  ' + label : '');
+    $('bRes').style.display = mode === 'video' ? '' : 'none';
+    $('bQ').style.display = mode === 'photo' ? '' : 'none';
+    $('bTimer').style.display = mode === 'photo' ? '' : 'none';
+    $('bRes').textContent = resOptions[resIdx].t;
+    $('bCam').textContent = devices.length > 1 ? 'Kamera ' + (devIndex + 1) + '/' + devices.length : 'Kamera';
+  }
+
+  // Dokunarak odaklama
+  $('view').addEventListener('click', async (e) => {
+    if (!track || e.target.closest('button') || e.target.closest('#panel')) return;
+    const rect = video.getBoundingClientRect();
+    // object-fit: contain => gerçek görüntü alanını hesapla
+    const vw = video.videoWidth || rect.width, vh = video.videoHeight || rect.height;
+    const scale = Math.min(rect.width / vw, rect.height / vh);
+    const dw = vw * scale, dh = vh * scale;
+    const ox = rect.left + (rect.width - dw) / 2, oy = rect.top + (rect.height - dh) / 2;
+    const x = (e.clientX - ox) / dw, y = (e.clientY - oy) / dh;
+    if (x < 0 || x > 1 || y < 0 || y > 1) return;
+    const ring = $('ring'); ring.style.left = e.clientX + 'px'; ring.style.top = (e.clientY - $('view').getBoundingClientRect().top) + 'px';
+    ring.classList.add('on'); setTimeout(() => ring.classList.remove('on'), 900);
+    const caps = track._caps || {};
+    try {
+      const adv = {};
+      if (caps.pointsOfInterest) adv.pointsOfInterest = [{ x, y }];
+      if (caps.focusMode && caps.focusMode.includes('single-shot')) adv.focusMode = 'single-shot';
+      if (Object.keys(adv).length) {
+        await track.applyConstraints({ advanced: [adv] });
+        // kısa süre sonra tekrar sürekli odaklamaya dön
+        setTimeout(() => {
+          if (track && caps.focusMode && caps.focusMode.includes('continuous'))
+            track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+        }, 3500);
+      }
+    } catch (err) {}
+  });
+
+  $('zoom').addEventListener('input', async (e) => {
+    $('zv').textContent = (+e.target.value).toFixed(1) + 'x';
+    try { await track.applyConstraints({ advanced: [{ zoom: +e.target.value }] }); } catch (err) {}
+  });
+
+  $('bFlash').addEventListener('click', async () => {
+    torchOn = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+      $('bFlash').textContent = 'Flaş: ' + (torchOn ? 'açık' : 'kapalı');
+      $('bFlash').classList.toggle('act', torchOn);
+    } catch (e) { torchOn = false; toast('Bu kamerada flaş kullanılamıyor'); }
+  });
+
+  $('bGrid').addEventListener('click', () => {
+    const g = $('grid'); const on = g.style.display !== 'block';
+    g.style.display = on ? 'block' : 'none'; $('bGrid').classList.toggle('act', on);
+  });
+
+  $('bRes').addEventListener('click', async () => {
+    resIdx = (resIdx + 1) % resOptions.length;
+    try { await openCamera(); } catch (e) { toast('Bu çözünürlük açılamadı'); resIdx = 1; await openCamera().catch(() => {}); }
+  });
+
+  $('bCam').addEventListener('click', async () => {
+    if (devices.length < 2) return toast('Başka kamera bulunamadı');
+    devIndex = (devIndex + 1) % devices.length;
+    try { await openCamera(); } catch (e) { toast('Kamera açılamadı: ' + e.name); }
+  });
+
+  async function setMode(m) {
+    if (recorder) return;
+    mode = m;
+    $('mPhoto').classList.toggle('sel', m === 'photo');
+    $('mVideo').classList.toggle('sel', m === 'video');
+    $('shutter').classList.toggle('video', m === 'video');
+    try { await openCamera(); } catch (e) { toast('Kamera açılamadı: ' + e.name); }
+  }
+  $('mPhoto').addEventListener('click', () => setMode('photo'));
+  $('mVideo').addEventListener('click', () => setMode('video'));
+
+  // ---------- FOTOĞRAF ----------
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const qNames = ['varsayılan', 'maksimum', '~12MP'];
+  let qIdx = 0, timerSec = 0;
+
+  $('bQ').addEventListener('click', () => { qIdx = (qIdx + 1) % qNames.length; $('bQ').textContent = 'Foto: ' + qNames[qIdx]; });
+  $('bTimer').addEventListener('click', () => {
+    timerSec = timerSec === 0 ? 2 : timerSec === 2 ? 5 : 0;
+    $('bTimer').textContent = 'Zamanlayıcı: ' + (timerSec ? timerSec + ' sn' : 'kapalı');
+    $('bTimer').classList.toggle('act', timerSec > 0);
+  });
+
+  async function takePhoto() {
+    let blob = null, how = 'yedek (önizleme karesi)';
+    const caps = (track && track._caps) || {};
+    // Çekimden hemen önce odağı yeniden doğrula (tek seferlik otofokus)
+    if (caps.focusMode && caps.focusMode.includes('single-shot')) {
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); await sleep(800); } catch (e) {}
+    }
+    if (imageCapture && imageCapture.takePhoto) {
+      try {
+        let settings = {};
+        if (qIdx > 0) {
+          try {
+            const pc = await imageCapture.getPhotoCapabilities();
+            if (pc.imageWidth && pc.imageHeight) {
+              if (qIdx === 1) { settings.imageWidth = pc.imageWidth.max; settings.imageHeight = pc.imageHeight.max; }
+              else {
+                const k = Math.sqrt(12e6 / (pc.imageWidth.max * pc.imageHeight.max));
+                if (k < 1) {
+                  settings.imageWidth = Math.max(pc.imageWidth.min, Math.round(pc.imageWidth.max * k));
+                  settings.imageHeight = Math.max(pc.imageHeight.min, Math.round(pc.imageHeight.max * k));
+                }
+              }
+            }
+          } catch (e) {}
+        }
+        try { blob = await imageCapture.takePhoto(settings); how = 'tam fotoğraf modu'; }
+        catch (e) { blob = await imageCapture.takePhoto(); how = 'tam fotoğraf modu (varsayılan)'; }
+      } catch (e) { blob = null; }
+    }
+    if (!blob) {
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95));
+    }
+    // sürekli odağa geri dön
+    if (caps.focusMode && caps.focusMode.includes('continuous')) {
+      try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    }
+    blob._how = how;
+    return blob;
+  }
+
+  // ---------- VİDEO ----------
+  function pickMime() {
+    const list = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=h264', 'video/webm;codecs=vp9', 'video/webm'];
+    return list.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  }
+  async function startRec() {
+    let s = stream;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s = new MediaStream([...stream.getVideoTracks(), ...micStream.getAudioTracks()]);
+    } catch (e) { toast('Mikrofon izni yok: ses kaydedilmeyecek'); micStream = null; }
+    const mime = pickMime();
+    const opts = { videoBitsPerSecond: resOptions[resIdx].w >= 3840 ? 40e6 : resOptions[resIdx].w >= 1920 ? 16e6 : 8e6 };
+    if (mime) opts.mimeType = mime;
+    chunks = [];
+    recorder = new MediaRecorder(s, opts);
+    recorder.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    recorder.onstop = () => {
+      const type = recorder.mimeType || 'video/webm';
+      const blob = new Blob(chunks, { type });
+      const ext = type.includes('mp4') ? 'mp4' : 'webm';
+      setLast(blob, 'VID_' + stamp() + '.' + ext, type);
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      recorder = null; clearInterval(recTimer);
+      $('rec').style.display = 'none'; $('shutter').classList.remove('recording');
+      autoSave();
+    };
+    recorder.start(1000);
+    recStart = Date.now();
+    $('rec').style.display = 'block'; $('shutter').classList.add('recording');
+    recTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - recStart) / 1000), p = n => String(n).padStart(2, '0');
+      $('rec').textContent = '● ' + p(Math.floor(sec / 60)) + ':' + p(sec % 60);
+    }, 500);
+  }
+
+  // ---------- Son çekim / kaydet / paylaş ----------
+  function setLast(blob, name, type) {
+    if (last && last.url) URL.revokeObjectURL(last.url);
+    last = { blob, name, type, url: URL.createObjectURL(blob) };
+    if (type.startsWith('image/')) $('thumb').style.backgroundImage = 'url(' + last.url + ')';
+    else $('thumb').style.backgroundImage = 'none', $('thumb').textContent = '▶';
+    if (type.startsWith('image/')) $('thumb').textContent = '';
+  }
+  function saveFile() {
+    if (!last) return;
+    const a = document.createElement('a');
+    a.href = last.url; a.download = last.name; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function autoSave() { saveFile(); toast('Kaydedildi: İndirilenler/' + last.name, 3000); }
+
+  $('thumb').addEventListener('click', () => {
+    if (!last) return;
+    const m = $('pmedia'); m.innerHTML = '';
+    let el;
+    if (last.type.startsWith('image/')) { el = document.createElement('img'); el.src = last.url; }
+    else { el = document.createElement('video'); el.src = last.url; el.controls = true; el.playsInline = true; }
+    el.style.maxWidth = '100%'; el.style.maxHeight = '60vh'; m.appendChild(el);
+    $('panel').style.display = 'flex';
+  });
+  $('pClose').addEventListener('click', () => { $('panel').style.display = 'none'; $('pmedia').innerHTML = ''; });
+  $('pSave').addEventListener('click', () => { saveFile(); toast('Kaydedildi'); });
+  $('pShare').addEventListener('click', async () => {
+    try {
+      const f = new File([last.blob], last.name, { type: last.type });
+      if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f] });
+      else toast('Paylaşma bu tarayıcıda desteklenmiyor; "Kaydet"i kullanın');
+    } catch (e) {}
+  });
+
+  // ---------- Deklanşör ----------
+  let busy = false;
+  $('shutter').addEventListener('click', async () => {
+    if (!track || busy) return;
+    if (mode === 'photo') {
+      busy = true;
+      for (let i = timerSec; i > 0; i--) { toast(String(i), 1100); await sleep(1000); }
+      $('view').style.opacity = .4; setTimeout(() => $('view').style.opacity = 1, 120);
+      try {
+        const blob = await takePhoto();
+        setLast(blob, 'IMG_' + stamp() + '.jpg', blob.type || 'image/jpeg');
+        saveFile();
+        let dims = '';
+        try { const bm = await createImageBitmap(blob); dims = bm.width + '×' + bm.height + ' · '; bm.close(); } catch (e) {}
+        toast('Kaydedildi: ' + dims + blob._how, 4000);
+      } catch (e) { toast('Çekilemedi: ' + (e && e.name || e)); }
+      busy = false;
+    } else {
+      if (recorder) recorder.stop(); else await startRec();
+    }
+  });
+
+  // ---------- Başlat ----------
+  $('go').addEventListener('click', async () => {
+    $('err').textContent = '';
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $('err').textContent = 'Bu tarayıcı kamera erişimini desteklemiyor. Sayfayı Chrome ile açın (dosyayı Dosyalar uygulamasından Chrome ile açmayı deneyin).';
+      return;
+    }
+    try {
+      await openCamera();
+      $('start').style.display = 'none';
+    } catch (e) {
+      let msg = 'Kamera açılamadı (' + (e && e.name) + ').';
+      if (!window.isSecureContext || location.protocol === 'content:') {
+        msg += '\n\nSayfa güvenli olmayan bir adresten açılmış (' + location.protocol + '). Chrome bu adreste kamerayı engeller.\nÇözüm: Chrome adres çubuğuna şunu yazın:\nfile:///sdcard/Download/' + 'kamera.html' + '\n(dosya adı farklıysa onu yazın)';
+      } else {
+        msg += '\nChrome menüsü → Ayarlar → Site ayarları → Kamera bölümünden izni kontrol edin.';
+      }
+      $('err').style.textAlign = 'center';
+      $('err').textContent = msg;
+    }
+  });
+
+  // Çevrimdışı çalışma için servis çalışanı (yalnızca https/localhost). Kendi dosyalarını önbelleğe alır, başka hiçbir şey yapmaz.
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (!recorder) stopStream(); }
+    else if ($('start').style.display === 'none') openCamera().catch(() => {});
+  });
+})();
+</script>
+</body>
+</html>
