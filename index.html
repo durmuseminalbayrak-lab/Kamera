@@ -389,7 +389,7 @@
     ring.classList.add('on');
     if (focusing || busy) return;
     focusing = true;
-    try { await tapFocus(x, y); } catch (err) {}
+    try { await within(tapFocus(x, y), 8000); } catch (err) {}
     focusing = false; hideBusy(); ring.classList.remove('on');
   });
 
@@ -397,7 +397,10 @@
   // Telefonun odak noktası koordinatlarına güvenmek yerine, dokunulan bölgenin netliğini
   // ekrandaki görüntüden ölçer ve en net odağı kendisi bulur.
   let focusing = false;
-  const settle = async n => { for (let i = 0; i < n; i++) await nextFrame(); };
+  // Takılmaya karşı: her bekleme en fazla belirli bir süre sürer
+  const within = (pr, ms) => Promise.race([pr, sleep(ms)]);
+  const frameT = () => within(nextFrame(), 120);
+  const settle = async n => { for (let i = 0; i < n; i++) await frameT(); };
   const [rC, rX] = mk(160, 160);
   function regionSharp(nx, ny) {
     const vw = video.videoWidth, vh = video.videoHeight; if (!vw) return 0;
@@ -406,7 +409,7 @@
     rX.drawImage(video, sx, sy, sz, sz, 0, 0, out, out);
     return lapVar(toGray(rX.getImageData(0, 0, out, out).data, out * out), out, out);
   }
-  async function measure(nx, ny, n) { let s = 0; for (let i = 0; i < n; i++) { await nextFrame(); s += regionSharp(nx, ny); } return s / n; }
+  async function measure(nx, ny, n) { let s = 0; for (let i = 0; i < n; i++) { await frameT(); s += regionSharp(nx, ny); } return s / n; }
   // Diyoptri (1/metre) ekseninde kaba + ince tarama; en yüksek netliği verir
   async function focusSearch(Dlo, Dhi, setD, meas) {
     let best = -1, bestD = Dlo; const N = 10, st = (Dhi - Dlo) / N;
@@ -426,7 +429,7 @@
       showBusy('Odaklanıyor…');
       const fd = c.focusDistance, Dlo = 1 / Math.max(fd.max, 0.01), Dhi = 1 / Math.max(fd.min, 0.01);
       const D = await focusSearch(Dlo, Dhi,
-        D => track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: clamp(1 / Math.max(D, 1e-4), fd.min, fd.max) }] }).catch(() => {}),
+        D => within(track.applyConstraints({ advanced: [{ focusMode: 'manual', focusDistance: clamp(1 / Math.max(D, 1e-4), fd.min, fd.max) }] }).catch(() => {}), 400),
         async () => { await settle(2); return measure(x, y, 2); });
       const m = 1 / Math.max(D, 1e-4);
       lockBadge('Odak ' + (m > 10 ? 'uzak' : m.toFixed(2) + ' m'));
@@ -436,7 +439,7 @@
     // 2) Yalnızca odak noktası destekleniyorsa: doğru yönü bir kez öğren, sonra hep onu kullan
     if (c.pointsOfInterest && has('single-shot')) {
       let saved = -1; try { saved = +(localStorage.getItem('kamera-poi') ?? -1); } catch (e) {}
-      const tryMap = async i => { await track.applyConstraints({ advanced: [{ pointsOfInterest: [POI_MAPS[i]({ x, y })], focusMode: 'single-shot' }] }); await sleep(900); return measure(x, y, 3); };
+      const tryMap = async i => { await within(track.applyConstraints({ advanced: [{ pointsOfInterest: [POI_MAPS[i]({ x, y })], focusMode: 'single-shot' }] }).catch(() => {}), 1000); await sleep(900); return measure(x, y, 3); };
       if (saved >= 0 && saved < 3) await tryMap(saved);
       else {
         showBusy('Odak yönü öğreniliyor…');
