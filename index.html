@@ -2,8 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<!-- GÜVENLİK: default-src 'none' => bu sayfa internete HİÇBİR bağlantı kuramaz.
-     Görüntüler yalnızca telefonda kalır; dosya kendi kendine yeterlidir, dış script yoktur. -->
+<!-- GÜVENLİK: default-src 'none' => bu sayfa internete HİÇBİR veri gönderemez. Görüntüler telefonda kalır. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob: data:; media-src blob: mediastream:; manifest-src 'self'; worker-src 'self';">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icon-192.png">
@@ -13,62 +12,117 @@
 <title>Kamera</title>
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; touch-action: manipulation; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
   #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
-  #view { position: relative; flex: 1; min-height: 0; background: #000; }
-  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-  #grid { position: absolute; inset: 0; pointer-events: none; display: none;
+  #view { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+  #stage { position: absolute; pointer-events: none; }
+  #fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #grid { position: absolute; inset: 0; display: none;
     background-image: linear-gradient(to right, transparent 33.2%, rgba(255,255,255,.35) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.35) 66.6%, transparent 66.8%),
                       linear-gradient(to bottom, transparent 33.2%, rgba(255,255,255,.35) 33.3%, transparent 33.5%, transparent 66.5%, rgba(255,255,255,.35) 66.6%, transparent 66.8%); }
-  #ring { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border: 2px solid #ffd54a; border-radius: 50%;
-    pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; transform: scale(1.4); }
+  #horizon { position: absolute; left: 18%; right: 18%; top: 50%; height: 0; display: none; }
+  #horizon div { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: rgba(255,255,255,.75); box-shadow: 0 0 3px #000; }
+  #horizon.ok div { background: #5df58a; }
+  #bubbleWrap { position: absolute; left: 50%; top: 50%; width: 120px; height: 120px; margin: -60px 0 0 -60px; border: 2px solid rgba(255,255,255,.6); border-radius: 50%; display: none; }
+  #bubbleWrap::after { content: ''; position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px; border: 1px solid rgba(255,255,255,.6); border-radius: 50%; }
+  #bubble { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px; border-radius: 50%; background: #ffd54a; box-shadow: 0 0 4px #000; }
+  #bubbleWrap.ok { border-color: #5df58a; } #bubbleWrap.ok #bubble { background: #5df58a; }
+  #thermalTag { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); font-size: 11px; background: rgba(0,0,0,.65); padding: 2px 8px; border-radius: 8px; display: none; white-space: nowrap; }
+  #hist { position: absolute; right: 10px; top: 64px; width: 128px; height: 64px; background: rgba(0,0,0,.5); border-radius: 6px; display: none; pointer-events: none; }
+  #ring { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border: 2px solid #ffd54a; border-radius: 50%; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; transform: scale(1.4); }
   #ring.on { opacity: 1; transform: scale(1); }
-  #top { position: absolute; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; font-size: 13px; padding: max(10px, env(safe-area-inset-top)) 12px 8px;
-    background: linear-gradient(#000a, transparent); }
-  #info { position: absolute; left: 12px; bottom: 10px; font-size: 12px; opacity: .85; text-shadow: 0 0 4px #000; }
-  #rec { position: absolute; top: 56px; left: 50%; transform: translateX(-50%); background: #d32f2f; padding: 3px 12px; border-radius: 12px; font-size: 14px; display: none; }
-  #toast { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); background: #000c; padding: 8px 14px; border-radius: 10px; font-size: 14px; display: none; max-width: 90%; text-align: center; }
-  #bar { background: #000; padding: 8px 12px max(14px, env(safe-area-inset-bottom)); }
-  #zoomrow { display: none; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+  #top { position: absolute; top: 0; left: 0; right: 0; display: flex; gap: 6px; justify-content: space-between; padding: max(10px, env(safe-area-inset-top)) 10px 8px; background: linear-gradient(rgba(0,0,0,.65), transparent); z-index: 2; font-size: 14px; }
+  #steady { position: absolute; left: 10px; top: 64px; display: none; align-items: center; gap: 6px; font-size: 12px; background: rgba(0,0,0,.5); padding: 4px 9px; border-radius: 12px; pointer-events: none; }
+  #steady i { width: 10px; height: 10px; border-radius: 50%; background: #888; display: inline-block; }
+  #busy { position: absolute; left: 50%; top: 45%; transform: translate(-50%,-50%); background: rgba(0,0,0,.75); padding: 12px 20px; border-radius: 14px; font-size: 20px; display: none; z-index: 3; text-align: center; pointer-events: none; }
+  #info { position: absolute; left: 10px; bottom: 8px; font-size: 11px; opacity: .8; text-shadow: 0 0 4px #000; pointer-events: none; max-width: 70%; }
+  #rec { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); background: #d32f2f; padding: 3px 12px; border-radius: 12px; font-size: 14px; display: none; }
+  #toast { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); background: rgba(0,0,0,.8); padding: 8px 14px; border-radius: 10px; font-size: 14px; display: none; max-width: 90%; text-align: center; z-index: 9; white-space: pre-line; }
+  #scanCard { position: absolute; left: 10px; right: 10px; bottom: 10px; background: rgba(20,20,20,.95); border: 1px solid rgba(255,255,255,.2); border-radius: 14px; padding: 12px; display: none; z-index: 3; }
+  #scFmt { font-size: 12px; opacity: .7; }
+  #scText { font-size: 16px; word-break: break-all; -webkit-user-select: text; user-select: text; max-height: 30vh; overflow: auto; margin: 6px 0 10px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  #bar { background: #000; padding: 8px 10px max(14px, env(safe-area-inset-bottom)); }
+  #pro { display: none; flex-direction: column; gap: 4px; margin-bottom: 6px; font-size: 13px; }
+  #pro .r { display: flex; align-items: center; gap: 8px; }
+  #pro .r span { width: 84px; flex: none; }
+  #pro .r input { flex: 1; min-width: 0; }
+  #pro .r b { width: 74px; text-align: right; font-weight: 500; flex: none; }
+  #zoomrow { display: none; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
   #zoomrow input { flex: 1; }
-  #modes { display: flex; justify-content: center; gap: 22px; margin-bottom: 8px; font-size: 15px; }
-  #modes span { opacity: .55; padding: 4px 8px; }
-  #modes span.sel { opacity: 1; color: #ffd54a; font-weight: 600; }
+  #pdfbar { display: none; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; justify-content: center; }
+  #modes { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; margin-bottom: 8px; font-size: 14px; justify-content: safe center; }
+  #modes::-webkit-scrollbar { display: none; }
+  #modes span { opacity: .55; padding: 6px 9px; white-space: nowrap; }
+  #modes span.sel { opacity: 1; color: #ffd54a; font-weight: 700; }
   #ctrl { display: flex; align-items: center; justify-content: space-between; }
-  button { font: inherit; color: #fff; background: #ffffff22; border: 0; border-radius: 22px; padding: 10px 14px; min-width: 44px; min-height: 44px; }
+  button { font: inherit; color: #fff; background: rgba(255,255,255,.14); border: 0; border-radius: 22px; padding: 9px 13px; min-width: 44px; min-height: 42px; }
   button.act { background: #ffd54a; color: #000; }
+  button.pri { background: #ffd54a; color: #000; font-weight: 700; }
   #shutter { width: 72px; height: 72px; border-radius: 50%; background: #fff; border: 5px solid #000; box-shadow: 0 0 0 3px #fff; padding: 0; }
   #shutter.video { background: #d32f2f; }
+  #shutter.scan { background: #4aa3ff; }
   #shutter.recording { border-radius: 14px; width: 60px; height: 60px; }
-  #thumb { width: 52px; height: 52px; border-radius: 10px; background: #222 center/cover no-repeat; border: 1px solid #fff5; padding: 0; min-width: 0; }
-  #start { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 5; }
+  #thumb { width: 52px; height: 52px; border-radius: 10px; background: #222 center/cover no-repeat; border: 1px solid rgba(255,255,255,.35); padding: 0; min-width: 0; font-size: 20px; }
+  #start { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; z-index: 8; }
   #start button { background: #ffd54a; color: #000; font-weight: 700; padding: 14px 30px; font-size: 18px; }
-  #err { color: #ff8a80; font-size: 14px; white-space: pre-wrap; }
-  #panel { position: absolute; inset: 0; background: #000e; z-index: 4; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; }
-  #panel img, #panel video { max-width: 100%; max-height: 60%; object-fit: contain; }
-  #panel .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  #err { color: #ff8a80; font-size: 14px; white-space: pre-wrap; text-align: center; }
+  #panel { position: absolute; inset: 0; background: rgba(0,0,0,.92); z-index: 6; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; }
+  #sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 82%; overflow: auto; background: #151515; border-radius: 18px 18px 0 0; z-index: 7; padding: 12px 16px max(16px, env(safe-area-inset-bottom)); display: none; }
+  #sheetBack { position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 7; display: none; }
+  #sheet h3 { margin: 4px 0 6px; font-size: 17px; display: flex; justify-content: space-between; align-items: center; }
+  #sheet .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.08); font-size: 15px; }
+  #sheet .row small { display: block; opacity: .6; font-size: 12px; margin-top: 2px; }
+  #sheet select { font: inherit; background: #222; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 6px; }
+  .sw { position: relative; width: 46px; height: 26px; flex: none; }
+  .sw input { opacity: 0; position: absolute; inset: 0; margin: 0; z-index: 1; }
+  .sw i { position: absolute; inset: 0; border-radius: 13px; background: #444; transition: .2s; }
+  .sw i::after { content: ''; position: absolute; left: 3px; top: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: .2s; }
+  .sw input:checked + i { background: #ffd54a; }
+  .sw input:checked + i::after { left: 23px; }
+  #doc { position: absolute; inset: 0; background: #000; z-index: 5; display: none; flex-direction: column; }
+  #docHd { padding: max(12px, env(safe-area-inset-top)) 12px 6px; font-size: 15px; text-align: center; opacity: .85; }
+  #dwrap { flex: 1; min-height: 0; position: relative; }
+  #dc { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #chips { display: none; gap: 6px; justify-content: center; padding: 6px; flex-wrap: wrap; }
+  #docC, #docR { display: none; gap: 8px; justify-content: center; flex-wrap: wrap; padding: 8px 10px max(12px, env(safe-area-inset-bottom)); }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="view">
     <video id="v" playsinline muted autoplay></video>
-    <div id="grid"></div>
+    <div id="stage">
+      <canvas id="fx"></canvas>
+      <div id="grid"></div>
+      <div id="horizon"><div></div></div>
+      <div id="bubbleWrap"><div id="bubble"></div></div>
+      <div id="thermalTag">TERMAL EFEKT · gerçek sıcaklık değildir</div>
+    </div>
+    <canvas id="hist" width="128" height="64"></canvas>
     <div id="ring"></div>
     <div id="top">
       <button id="bFlash">Flaş: kapalı</button>
-      <button id="bGrid">Izgara</button>
-      <button id="bRes">Çözünürlük</button>
-      <button id="bQ">Foto: varsayılan</button>
-      <button id="bTimer">Zamanlayıcı: kapalı</button>
+      <button id="bTimer">⏱ kapalı</button>
+      <button id="bSet">⚙ Ayarlar</button>
     </div>
+    <div id="steady"><i></i><span>Sabit</span></div>
     <div id="rec">● 00:00</div>
+    <div id="busy"></div>
     <div id="info"></div>
     <div id="toast"></div>
+    <div id="scanCard">
+      <div id="scFmt"></div>
+      <div id="scText"></div>
+      <div class="btns"><button id="scCopy">Kopyala</button><button id="scOpen">Bağlantıyı aç</button><button id="scClose">Kapat</button></div>
+    </div>
   </div>
   <div id="bar">
+    <div id="pro"></div>
     <div id="zoomrow"><span>Yakınlaştır</span><input id="zoom" type="range"><span id="zv">1x</span></div>
-    <div id="modes"><span id="mPhoto" class="sel">FOTOĞRAF</span><span id="mVideo">VİDEO</span></div>
+    <div id="pdfbar"><span>PDF: <b id="pdfN">0</b> sayfa</span><button id="pdfSave" class="pri">PDF kaydet</button><button id="pdfClear">Temizle</button></div>
+    <div id="modes"></div>
     <div id="ctrl">
       <button id="thumb" aria-label="Son çekim"></button>
       <button id="shutter" aria-label="Çek"></button>
@@ -76,16 +130,29 @@
     </div>
   </div>
 
+  <div id="doc">
+    <div id="docHd"></div>
+    <div id="dwrap"><canvas id="dc"></canvas></div>
+    <div id="chips">
+      <button data-f="enh">Net renk</button><button data-f="bw">Siyah-beyaz</button><button data-f="gray">Gri</button><button data-f="orig">Orijinal</button>
+    </div>
+    <div id="docC"><button id="dAuto">Otomatik</button><button id="dFull">Tam kare</button><button id="dCancel">İptal</button><button id="dNext" class="pri">Devam →</button></div>
+    <div id="docR"><button id="dRot">⟳ Döndür</button><button id="dBack">← Köşeler</button><button id="dJpg">JPG kaydet</button><button id="dPdf" class="pri">PDF'e ekle</button></div>
+  </div>
+
+  <div id="sheetBack"></div>
+  <div id="sheet"><h3>Ayarlar <button id="sheetClose">Kapat</button></h3><div id="sheetBody"></div></div>
+
   <div id="start">
     <div style="font-size:22px;font-weight:700">Kamera</div>
-    <div style="opacity:.8;max-width:420px;font-size:14px">Bu sayfa internete bağlanamaz. Görüntüler yalnızca telefonunuzda kalır. Başlamak için kamera iznini vermeniz gerekir.</div>
+    <div style="opacity:.8;max-width:420px;font-size:14px">Bu sayfa internete veri gönderemez. Görüntüler yalnızca telefonunuzda kalır. Başlamak için kamera iznini vermeniz gerekir.</div>
     <button id="go">Kamerayı aç</button>
     <div id="err"></div>
   </div>
 
   <div id="panel">
-    <div id="pmedia"></div>
-    <div class="row">
+    <div id="pmedia" style="max-width:100%;text-align:center"></div>
+    <div class="btns" style="justify-content:center">
       <button id="pSave">Kaydet</button>
       <button id="pShare">Paylaş / Galeriye</button>
       <button id="pClose">Kapat</button>
@@ -98,283 +165,925 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const video = $('v');
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+  const vibrate = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+  const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d', { willReadFrequently: true })]; };
+  const toJpeg = (c, q) => new Promise(r => c.toBlob(r, 'image/jpeg', q || 0.92));
 
-  let stream = null, track = null, imageCapture = null;
-  let devices = [], devIndex = 0;
-  let mode = 'photo';           // 'photo' | 'video'
-  let torchOn = false;
+  // ================= AYARLAR =================
+  const DEF = { grid: false, level: true, hist: false, zebra: false, thermal: false, voice: false, geo: false, steady: true, burst: 3, photoQ: 0, vres: 1 };
+  const S = Object.assign({}, DEF);
+  try { Object.assign(S, JSON.parse(localStorage.getItem('kamera-ayar') || '{}')); } catch (e) {}
+  const saveS = () => { try { localStorage.setItem('kamera-ayar', JSON.stringify(S)); } catch (e) {} };
+
+  let stream = null, track = null, imageCapture = null, devices = [], devIndex = 0, mode = 'photo', torchOn = false;
   let recorder = null, chunks = [], recTimer = null, recStart = 0, micStream = null;
-  let last = null;              // { blob, name, url, type }
-  const resOptions = [ { w: 1280, h: 720, t: '720p' }, { w: 1920, h: 1080, t: '1080p' }, { w: 3840, h: 2160, t: '4K' } ];
-  let resIdx = 1;
+  let last = null, busy = false, timerSec = 0, pages = [];
+  const VRES = [{ w: 1280, h: 720, t: '720p' }, { w: 1920, h: 1080, t: '1080p' }, { w: 3840, h: 2160, t: '4K' }];
+  const MODES = [['photo', 'FOTO'], ['doc', 'BELGE'], ['night', 'GECE'], ['pro', 'PRO'], ['video', 'VİDEO'], ['scan', 'BARKOD']];
+  const PHOTO_MODES = ['photo', 'doc', 'night', 'pro'];
 
   function toast(msg, ms) {
     const t = $('toast'); t.textContent = msg; t.style.display = 'block';
     clearTimeout(toast._h); toast._h = setTimeout(() => t.style.display = 'none', ms || 2200);
   }
+  const showBusy = t => { const b = $('busy'); b.textContent = t; b.style.display = 'block'; };
+  const hideBusy = () => { $('busy').style.display = 'none'; };
+  const started = () => $('start').style.display === 'none';
   function stamp() {
     const d = new Date(), p = n => String(n).padStart(2, '0');
     return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
   }
 
+  // ================= SENSÖRLER =================
+  const M = { rotAvg: 99, hasRot: false, ax: 0, ay: 9.8, az: 0, hasG: false, heading: null, pos: null };
+  window.addEventListener('devicemotion', e => {
+    const r = e.rotationRate;
+    if (r && (r.alpha != null || r.beta != null || r.gamma != null)) {
+      const m = Math.hypot(r.alpha || 0, r.beta || 0, r.gamma || 0);
+      M.rotAvg = M.hasRot ? M.rotAvg * 0.75 + m * 0.25 : m; M.hasRot = true;
+    }
+    const g = e.accelerationIncludingGravity;
+    if (g && g.x != null) {
+      const k = M.hasG ? 0.25 : 1;
+      M.ax += (g.x - M.ax) * k; M.ay += (g.y - M.ay) * k; M.az += (g.z - M.az) * k; M.hasG = true;
+    }
+  });
+  window.addEventListener('deviceorientationabsolute', e => { if (e.alpha != null) M.heading = (360 - e.alpha) % 360; });
+
+  let wasLevel = false;
+  function sensorsTick() {
+    const st = $('steady');
+    if (S.steady && M.hasRot && started() && PHOTO_MODES.includes(mode)) {
+      const v = M.rotAvg; st.style.display = 'flex';
+      st.querySelector('i').style.background = v < 4 ? '#5df58a' : v < 10 ? '#ffd54a' : '#ff5252';
+      st.querySelector('span').textContent = v < 4 ? 'Sabit' : 'Kıpırdıyor';
+    } else st.style.display = 'none';
+
+    const hz = $('horizon'), bw = $('bubbleWrap');
+    if (!S.level || !M.hasG || !started() || mode === 'scan') { hz.style.display = 'none'; bw.style.display = 'none'; return; }
+    const gN = Math.hypot(M.ax, M.ay, M.az) || 9.8;
+    const flat = Math.abs(M.az) / gN > 0.8;
+    if (flat) {
+      hz.style.display = 'none';
+      if (mode !== 'doc') { bw.style.display = 'none'; return; }
+      bw.style.display = 'block';
+      const tx = Math.atan2(M.ax, Math.abs(M.az)) * 57.2958, ty = Math.atan2(M.ay, Math.abs(M.az)) * 57.2958;
+      $('bubble').style.transform = 'translate(' + clamp(tx * 2.5, -48, 48) + 'px,' + clamp(-ty * 2.5, -48, 48) + 'px)';
+      const ok = Math.abs(tx) < 2 && Math.abs(ty) < 2;
+      bw.classList.toggle('ok', ok); if (ok && !wasLevel) vibrate(15); wasLevel = ok;
+    } else {
+      bw.style.display = 'none'; hz.style.display = 'block';
+      const th = Math.atan2(-M.ax, M.ay) * 57.2958 - ((screen.orientation && screen.orientation.angle) || 0);
+      const d = th - Math.round(th / 90) * 90;
+      hz.style.transform = 'rotate(' + (-d) + 'deg)';
+      const ok = Math.abs(d) < 1; hz.classList.toggle('ok', ok); if (ok && !wasLevel) vibrate(10); wasLevel = ok;
+    }
+  }
+
+  async function waitSteady(maxMs) {
+    if (!S.steady || !M.hasRot) return;
+    const t0 = performance.now(); let ok0 = 0;
+    while (true) {
+      const now = performance.now(), el = now - t0;
+      if (el > maxMs) break;
+      const thr = el < 1200 ? 4 : 7;
+      if (M.rotAvg < thr) { if (!ok0) ok0 = now; if (now - ok0 >= 150) break; } else ok0 = 0;
+      if (el > 250) showBusy('Sabit tutun…');
+      await sleep(16);
+    }
+  }
+
+  // ---- Konum ----
+  let geoWatch = null;
+  function geoOn() {
+    if (!navigator.geolocation) { toast('Konum desteklenmiyor'); return; }
+    if (geoWatch != null) return;
+    geoWatch = navigator.geolocation.watchPosition(p => { M.pos = p.coords; }, e => {
+      toast('Konum alınamadı: ' + (e.code === 1 ? 'izin verilmedi' : e.message), 3000);
+      if (e.code === 1) { S.geo = false; saveS(); syncSheet(); geoOff(); }
+    }, { enableHighAccuracy: true, maximumAge: 15000, timeout: 30000 });
+  }
+  function geoOff() { if (geoWatch != null) navigator.geolocation.clearWatch(geoWatch); geoWatch = null; M.pos = null; }
+
+  // ---- Ekran açık kalsın ----
+  let wake = null;
+  async function requestWake() {
+    try { if ('wakeLock' in navigator && !wake && document.visibilityState === 'visible') { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch (e) {}
+  }
+
+  // ---- Sesle çekim ----
+  let vMic = null, vCtx = null, vRaf = 0, vLast = 0;
+  async function voiceOn() {
+    if (vMic) return;
+    try {
+      vMic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      vCtx = new (window.AudioContext || window.webkitAudioContext)();
+      try { await vCtx.resume(); } catch (e) {}
+      const an = vCtx.createAnalyser(); an.fftSize = 1024;
+      vCtx.createMediaStreamSource(vMic).connect(an);
+      const buf = new Float32Array(an.fftSize); let floor = 0.02;
+      const loop = () => {
+        if (!vMic) return;
+        an.getFloatTimeDomainData(buf);
+        let pk = 0; for (let i = 0; i < buf.length; i++) { const a = Math.abs(buf[i]); if (a > pk) pk = a; }
+        const now = performance.now();
+        if (pk > 0.5 && pk > floor * 5 && now - vLast > 2500 && !busy && started() && $('doc').style.display !== 'flex' && PHOTO_MODES.includes(mode)) {
+          vLast = now; toast('Ses algılandı', 900); $('shutter').click();
+        }
+        floor = floor * 0.97 + Math.min(pk, 0.3) * 0.03;
+        vRaf = requestAnimationFrame(loop);
+      };
+      loop();
+    } catch (e) { vMic = null; S.voice = false; saveS(); syncSheet(); toast('Mikrofon izni verilmedi'); }
+  }
+  function voiceOff() {
+    cancelAnimationFrame(vRaf);
+    if (vMic) vMic.getTracks().forEach(t => t.stop()); vMic = null;
+    if (vCtx) { vCtx.close().catch(() => {}); vCtx = null; }
+  }
+
+  // ================= KAMERA =================
   async function listDevices() {
     const all = await navigator.mediaDevices.enumerateDevices();
     devices = all.filter(d => d.kind === 'videoinput');
-    // arka kameralar önce
-    devices.sort((a, b) => {
-      const fa = /front|ön/i.test(a.label) ? 1 : 0, fb = /front|ön/i.test(b.label) ? 1 : 0;
-      return fa - fb;
-    });
+    devices.sort((a, b) => (/front|ön/i.test(a.label) ? 1 : 0) - (/front|ön/i.test(b.label) ? 1 : 0));
   }
-
   function stopStream() {
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; track = null; imageCapture = null; torchOn = false;
     $('bFlash').textContent = 'Flaş: kapalı'; $('bFlash').classList.remove('act');
   }
-
   async function openCamera() {
     stopStream();
-    const r = resOptions[resIdx];
-    const wantVideo = mode === 'video';
-    const base = wantVideo ? { width: { ideal: r.w }, height: { ideal: r.h } } : { width: { ideal: 1920 }, height: { ideal: 1080 } };
-    let video_c;
-    if (devices.length && devices[devIndex] && devices[devIndex].deviceId) {
-      video_c = Object.assign({ deviceId: { exact: devices[devIndex].deviceId } }, base);
-    } else {
-      video_c = Object.assign({ facingMode: { ideal: 'environment' } }, base);
-    }
-    stream = await navigator.mediaDevices.getUserMedia({ video: video_c, audio: false });
+    let w = 1920, h = 1080;
+    if (mode === 'video') { w = VRES[S.vres].w; h = VRES[S.vres].h; }
+    else if (mode === 'night') { w = 3840; h = 2160; }
+    const base = { width: { ideal: w }, height: { ideal: h } };
+    const vc = (devices[devIndex] && devices[devIndex].deviceId)
+      ? Object.assign({ deviceId: { exact: devices[devIndex].deviceId } }, base)
+      : Object.assign({ facingMode: { ideal: 'environment' } }, base);
+    stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
     track = stream.getVideoTracks()[0];
     video.srcObject = stream;
     try { await video.play(); } catch (e) {}
-    await listDevices(); // etiketler izinden sonra gelir
-    if (devices.length) {
-      const cur = track.getSettings().deviceId;
-      const i = devices.findIndex(d => d.deviceId === cur);
-      if (i >= 0) devIndex = i;
-    }
+    await listDevices();
+    if (devices.length) { const cur = track.getSettings().deviceId; const i = devices.findIndex(d => d.deviceId === cur); if (i >= 0) devIndex = i; }
     try { imageCapture = new ImageCapture(track); } catch (e) { imageCapture = null; }
     await setupCaps();
-    updateInfo();
+    buildPro(); updateInfo(); layoutStage(); requestWake();
   }
-
   async function setupCaps() {
     let caps = {};
     try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
-    // Sürekli otofokus
-    try {
-      if (caps.focusMode && caps.focusMode.includes('continuous')) {
-        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
-      }
-    } catch (e) {}
-    // Yakınlaştırma
+    track._caps = caps;
+    try { if (caps.focusMode && caps.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
     const zr = $('zoomrow'), z = $('zoom');
     if (caps.zoom && caps.zoom.max > caps.zoom.min) {
       z.min = caps.zoom.min; z.max = caps.zoom.max; z.step = caps.zoom.step || 0.1;
       z.value = (track.getSettings().zoom || caps.zoom.min);
-      $('zv').textContent = (+z.value).toFixed(1) + 'x';
-      zr.style.display = 'flex';
+      $('zv').textContent = (+z.value).toFixed(1) + 'x'; zr.style.display = 'flex';
     } else zr.style.display = 'none';
-    $('bFlash').style.display = caps.torch || mode === 'photo' ? '' : 'none';
-    track._caps = caps;
   }
-
   function updateInfo() {
     const s = track ? track.getSettings() : {};
     const label = devices[devIndex] && devices[devIndex].label ? devices[devIndex].label : '';
-    $('info').textContent = (s.width ? s.width + '×' + s.height : '') + (label ? '  ·  ' + label : '');
-    $('bRes').style.display = mode === 'video' ? '' : 'none';
-    $('bQ').style.display = mode === 'photo' ? '' : 'none';
-    $('bTimer').style.display = mode === 'photo' ? '' : 'none';
-    $('bRes').textContent = resOptions[resIdx].t;
+    const hint = { doc: 'Belge: telefonu kâğıda paralel tutun', night: 'Gece: 10 kare birleştirilir', pro: 'Pro: elle ayar', scan: 'Barkod/QR okuyucu' }[mode] || '';
+    $('info').textContent = (s.width ? s.width + '×' + s.height : '') + (label ? ' · ' + label : '') + (hint ? '\n' + hint : '');
+    $('info').style.whiteSpace = 'pre-line';
     $('bCam').textContent = devices.length > 1 ? 'Kamera ' + (devIndex + 1) + '/' + devices.length : 'Kamera';
+    $('bFlash').style.display = mode === 'scan' ? 'none' : '';
   }
+  function layoutStage() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+    const R = $('view').getBoundingClientRect();
+    const sc = Math.min(R.width / vw, R.height / vh), dw = vw * sc, dh = vh * sc;
+    const st = $('stage').style;
+    st.left = (R.width - dw) / 2 + 'px'; st.top = (R.height - dh) / 2 + 'px'; st.width = dw + 'px'; st.height = dh + 'px';
+    const dpr = Math.min(window.devicePixelRatio || 1, 2), fx = $('fx');
+    fx.width = Math.round(dw * dpr); fx.height = Math.round(dh * dpr);
+  }
+  video.addEventListener('loadedmetadata', layoutStage);
+  video.addEventListener('resize', layoutStage);
+  window.addEventListener('resize', () => { layoutStage(); if ($('doc').style.display === 'flex') drawDoc(); });
 
   // Dokunarak odaklama
-  $('view').addEventListener('click', async (e) => {
-    if (!track || e.target.closest('button') || e.target.closest('#panel')) return;
-    const rect = video.getBoundingClientRect();
-    // object-fit: contain => gerçek görüntü alanını hesapla
-    const vw = video.videoWidth || rect.width, vh = video.videoHeight || rect.height;
-    const scale = Math.min(rect.width / vw, rect.height / vh);
-    const dw = vw * scale, dh = vh * scale;
-    const ox = rect.left + (rect.width - dw) / 2, oy = rect.top + (rect.height - dh) / 2;
-    const x = (e.clientX - ox) / dw, y = (e.clientY - oy) / dh;
+  $('view').addEventListener('click', async e => {
+    if (!track || e.target.closest('button') || e.target.closest('#scanCard')) return;
+    const r = $('stage').getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
-    const ring = $('ring'); ring.style.left = e.clientX + 'px'; ring.style.top = (e.clientY - $('view').getBoundingClientRect().top) + 'px';
+    const ring = $('ring'), vr = $('view').getBoundingClientRect();
+    ring.style.left = (e.clientX - vr.left) + 'px'; ring.style.top = (e.clientY - vr.top) + 'px';
     ring.classList.add('on'); setTimeout(() => ring.classList.remove('on'), 900);
     const caps = track._caps || {};
     try {
       const adv = {};
       if (caps.pointsOfInterest) adv.pointsOfInterest = [{ x, y }];
-      if (caps.focusMode && caps.focusMode.includes('single-shot')) adv.focusMode = 'single-shot';
+      if (caps.focusMode && caps.focusMode.includes('single-shot') && mode !== 'pro') adv.focusMode = 'single-shot';
       if (Object.keys(adv).length) {
         await track.applyConstraints({ advanced: [adv] });
-        // kısa süre sonra tekrar sürekli odaklamaya dön
-        setTimeout(() => {
-          if (track && caps.focusMode && caps.focusMode.includes('continuous'))
-            track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
-        }, 3500);
+        setTimeout(() => { if (track && mode !== 'pro' && caps.focusMode && caps.focusMode.includes('continuous')) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 3500);
       }
     } catch (err) {}
   });
 
-  $('zoom').addEventListener('input', async (e) => {
+  $('zoom').addEventListener('input', async e => {
     $('zv').textContent = (+e.target.value).toFixed(1) + 'x';
     try { await track.applyConstraints({ advanced: [{ zoom: +e.target.value }] }); } catch (err) {}
   });
-
   $('bFlash').addEventListener('click', async () => {
     torchOn = !torchOn;
     try {
       await track.applyConstraints({ advanced: [{ torch: torchOn }] });
-      $('bFlash').textContent = 'Flaş: ' + (torchOn ? 'açık' : 'kapalı');
-      $('bFlash').classList.toggle('act', torchOn);
+      $('bFlash').textContent = 'Flaş: ' + (torchOn ? 'açık' : 'kapalı'); $('bFlash').classList.toggle('act', torchOn);
     } catch (e) { torchOn = false; toast('Bu kamerada flaş kullanılamıyor'); }
   });
-
-  $('bGrid').addEventListener('click', () => {
-    const g = $('grid'); const on = g.style.display !== 'block';
-    g.style.display = on ? 'block' : 'none'; $('bGrid').classList.toggle('act', on);
+  $('bTimer').addEventListener('click', () => {
+    timerSec = { 0: 2, 2: 5, 5: 10, 10: 0 }[timerSec];
+    $('bTimer').textContent = '⏱ ' + (timerSec ? timerSec + ' sn' : 'kapalı'); $('bTimer').classList.toggle('act', timerSec > 0);
   });
-
-  $('bRes').addEventListener('click', async () => {
-    resIdx = (resIdx + 1) % resOptions.length;
-    try { await openCamera(); } catch (e) { toast('Bu çözünürlük açılamadı'); resIdx = 1; await openCamera().catch(() => {}); }
-  });
-
   $('bCam').addEventListener('click', async () => {
     if (devices.length < 2) return toast('Başka kamera bulunamadı');
     devIndex = (devIndex + 1) % devices.length;
     try { await openCamera(); } catch (e) { toast('Kamera açılamadı: ' + e.name); }
   });
 
-  async function setMode(m) {
-    if (recorder) return;
-    mode = m;
-    $('mPhoto').classList.toggle('sel', m === 'photo');
-    $('mVideo').classList.toggle('sel', m === 'video');
-    $('shutter').classList.toggle('video', m === 'video');
-    try { await openCamera(); } catch (e) { toast('Kamera açılamadı: ' + e.name); }
+  // ================= GÖRÜNTÜ YARDIMCILARI =================
+  function toGray(d, n) { const g = new Uint8Array(n); for (let i = 0, j = 0; i < n; i++, j += 4) g[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8; return g; }
+  function lapVar(g, w, h) {
+    let s = 0, s2 = 0, n = 0;
+    for (let y = 1; y < h - 1; y++) { let i = y * w + 1; for (let x = 1; x < w - 1; x++, i++) { const l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w]; s += l; s2 += l * l; n++; } }
+    const m = s / n; return s2 / n - m * m;
   }
-  $('mPhoto').addEventListener('click', () => setMode('photo'));
-  $('mVideo').addEventListener('click', () => setMode('video'));
-
-  // ---------- FOTOĞRAF ----------
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const qNames = ['varsayılan', 'maksimum', '~12MP'];
-  let qIdx = 0, timerSec = 0;
-
-  $('bQ').addEventListener('click', () => { qIdx = (qIdx + 1) % qNames.length; $('bQ').textContent = 'Foto: ' + qNames[qIdx]; });
-  $('bTimer').addEventListener('click', () => {
-    timerSec = timerSec === 0 ? 2 : timerSec === 2 ? 5 : 0;
-    $('bTimer').textContent = 'Zamanlayıcı: ' + (timerSec ? timerSec + ' sn' : 'kapalı');
-    $('bTimer').classList.toggle('act', timerSec > 0);
-  });
-
-  async function takePhoto() {
-    let blob = null, how = 'yedek (önizleme karesi)';
-    const caps = (track && track._caps) || {};
-    // Çekimden hemen önce odağı yeniden doğrula (tek seferlik otofokus)
-    if (caps.focusMode && caps.focusMode.includes('single-shot')) {
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); await sleep(800); } catch (e) {}
+  async function blobSharp(blob) {
+    const bm = await createImageBitmap(blob, { resizeWidth: 900, resizeQuality: 'low' });
+    const w = bm.width, h = bm.height, cw = Math.round(w * 0.6), ch = Math.round(h * 0.6);
+    const [c, x] = mk(cw, ch); x.drawImage(bm, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, cw, ch); bm.close();
+    return lapVar(toGray(x.getImageData(0, 0, cw, ch).data, cw * ch), cw, ch);
+  }
+  async function decodeCapped(blob, cap) {
+    let bm = await createImageBitmap(blob);
+    if (Math.max(bm.width, bm.height) > cap) {
+      const k = cap / Math.max(bm.width, bm.height), w = Math.round(bm.width * k), h = Math.round(bm.height * k);
+      bm.close(); bm = await createImageBitmap(blob, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
     }
+    return bm;
+  }
+  function pct(h, n, p) { let a = 0; const t = n * p; for (let i = 0; i < 256; i++) { a += h[i]; if (a >= t) return i; } return 255; }
+
+  // Termal renk paleti (demir-kızıl)
+  const TLUT = (() => {
+    const st = [[0, 0, 0, 0], [.15, 30, 0, 100], [.35, 120, 0, 160], [.55, 225, 40, 50], [.75, 255, 140, 0], [.9, 255, 225, 70], [1, 255, 255, 255]];
+    const L = new Uint8Array(768);
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255; let k = 0; while (k < st.length - 2 && t > st[k + 1][0]) k++;
+      const a = st[k], b = st[k + 1], u = (t - a[0]) / (b[0] - a[0]);
+      for (let c = 0; c < 3; c++) L[i * 3 + c] = Math.round(a[c + 1] + (b[c + 1] - a[c + 1]) * u);
+    }
+    return L;
+  })();
+  function thermalize(d, n) {
+    const g = toGray(d, n), h = new Uint32Array(256);
+    for (let i = 0; i < n; i++) h[g[i]]++;
+    const lo = pct(h, n, 0.01), hi = pct(h, n, 0.99), sc = 255 / Math.max(8, hi - lo);
+    for (let i = 0, j = 0; i < n; i++, j += 4) { const v = clamp(((g[i] - lo) * sc) | 0, 0, 255) * 3; d[j] = TLUT[v]; d[j + 1] = TLUT[v + 1]; d[j + 2] = TLUT[v + 2]; }
+  }
+  async function thermalBlob(blob) {
+    const bm = await decodeCapped(blob, 4096); const [c, x] = mk(bm.width, bm.height); x.drawImage(bm, 0, 0); bm.close();
+    const im = x.getImageData(0, 0, c.width, c.height); thermalize(im.data, c.width * c.height); x.putImageData(im, 0, 0);
+    return await toJpeg(c, 0.92);
+  }
+
+  // ================= BELGE ALGILAMA =================
+  function detectDoc(g, w, h) {
+    const n = w * h, b = new Uint8Array(n);
+    for (let i = 0; i < n; i++) b[i] = g[i];
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      b[i] = (g[i - w - 1] + g[i - w] + g[i - w + 1] + g[i - 1] + g[i] + g[i + 1] + g[i + w - 1] + g[i + w] + g[i + w + 1]) / 9 | 0;
+    }
+    const hist = new Uint32Array(256); for (let i = 0; i < n; i++) hist[b[i]]++;
+    let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sB = 0, wB = 0, max = 0, T = 128;
+    for (let i = 0; i < 256; i++) {
+      wB += hist[i]; if (!wB) continue; const wF = n - wB; if (!wF) break;
+      sB += i * hist[i]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF);
+      if (v > max) { max = v; T = i; }
+    }
+    const m = new Uint8Array(n); for (let i = 0; i < n; i++) m[i] = b[i] > T ? 1 : 0;
+    let seed = -1, bd = 1e12; const cx = w >> 1, cy = h >> 1, rx = w * 0.2 | 0, ry = h * 0.2 | 0;
+    for (let y = cy - ry; y <= cy + ry; y += 2) for (let x = cx - rx; x <= cx + rx; x += 2) {
+      const i = y * w + x; if (m[i]) { const dd = (x - cx) * (x - cx) + (y - cy) * (y - cy); if (dd < bd) { bd = dd; seed = i; } }
+    }
+    if (seed < 0) return null;
+    const q = new Int32Array(n); let qh = 0, qt = 0; q[qt++] = seed; m[seed] = 2;
+    let cnt = 0, sx = 0, sy = 0; const bx = [], by = [];
+    while (qh < qt) {
+      const i = q[qh++], x = i % w, y = (i / w) | 0; cnt++; sx += x; sy += y; let edge = false;
+      if (x > 0) { const k = i - 1; if (m[k] === 1) { m[k] = 2; q[qt++] = k; } else if (!m[k]) edge = true; } else edge = true;
+      if (x < w - 1) { const k = i + 1; if (m[k] === 1) { m[k] = 2; q[qt++] = k; } else if (!m[k]) edge = true; } else edge = true;
+      if (y > 0) { const k = i - w; if (m[k] === 1) { m[k] = 2; q[qt++] = k; } else if (!m[k]) edge = true; } else edge = true;
+      if (y < h - 1) { const k = i + w; if (m[k] === 1) { m[k] = 2; q[qt++] = k; } else if (!m[k]) edge = true; } else edge = true;
+      if (edge) { bx.push(x); by.push(y); }
+    }
+    if (cnt < n * 0.08 || cnt > n * 0.95 || bx.length < 8) return null;
+    const mx = sx / cnt, my = sy / cnt;
+    const far = (px, py) => { let bi = 0, bv = -1; for (let k = 0; k < bx.length; k++) { const v = (bx[k] - px) * (bx[k] - px) + (by[k] - py) * (by[k] - py); if (v > bv) { bv = v; bi = k; } } return bi; };
+    const a = far(mx, my), c2 = far(bx[a], by[a]);
+    const ax = bx[a], ay = by[a], cx2 = bx[c2], cy2 = by[c2];
+    let pMax = 0, pMin = 0, iMax = -1, iMin = -1;
+    for (let k = 0; k < bx.length; k++) {
+      const s = (cx2 - ax) * (by[k] - ay) - (cy2 - ay) * (bx[k] - ax);
+      if (s > pMax) { pMax = s; iMax = k; } if (s < pMin) { pMin = s; iMin = k; }
+    }
+    if (iMax < 0 || iMin < 0) return null;
+    let pts = [[ax, ay], [bx[iMax], by[iMax]], [cx2, cy2], [bx[iMin], by[iMin]]];
+    if (Math.abs(polyArea(pts)) < n * 0.08) return null;
+    pts = orderQuad(pts);
+    return pts.map(p => [(p[0] + 0.5) / w, (p[1] + 0.5) / h]);
+  }
+  function polyArea(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; } return s / 2; }
+  function orderQuad(p) {
+    const cx = (p[0][0] + p[1][0] + p[2][0] + p[3][0]) / 4, cy = (p[0][1] + p[1][1] + p[2][1] + p[3][1]) / 4;
+    p = p.slice().sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    let s = 0, best = Infinity; for (let k = 0; k < 4; k++) { const v = p[k][0] + p[k][1]; if (v < best) { best = v; s = k; } }
+    return [0, 1, 2, 3].map(k => p[(s + k) % 4]);
+  }
+  function solve(A, B) {
+    const n = B.length;
+    for (let i = 0; i < n; i++) {
+      let p = i; for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[p][i])) p = r;
+      [A[i], A[p]] = [A[p], A[i]]; [B[i], B[p]] = [B[p], B[i]];
+      for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c < n; c++) A[r][c] -= f * A[i][c]; B[r] -= f * B[i]; }
+    }
+    const X = new Array(n);
+    for (let i = n - 1; i >= 0; i--) { let s = B[i]; for (let c = i + 1; c < n; c++) s -= A[i][c] * X[c]; X[i] = s / A[i][i]; }
+    return X;
+  }
+  function homography(P, Q) {
+    const A = [], B = [];
+    for (let i = 0; i < 4; i++) {
+      const u = P[i][0], v = P[i][1], x = Q[i][0], y = Q[i][1];
+      A.push([u, v, 1, 0, 0, 0, -u * x, -v * x]); B.push(x);
+      A.push([0, 0, 0, u, v, 1, -u * y, -v * y]); B.push(y);
+    }
+    return solve(A, B);
+  }
+  function warpQuad(src, q) {
+    const dd = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    let ow = Math.max(dd(q[0], q[1]), dd(q[3], q[2])), oh = Math.max(dd(q[0], q[3]), dd(q[1], q[2]));
+    const k = Math.min(1, 3200 / Math.max(ow, oh));
+    ow = Math.max(16, Math.round(ow * k)); oh = Math.max(16, Math.round(oh * k));
+    const sw = src.width, sh = src.height;
+    const sd = src.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, sw, sh).data;
+    const H = homography([[0, 0], [ow, 0], [ow, oh], [0, oh]], q);
+    const a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], hh = H[7];
+    const [oc, ox] = mk(ow, oh); const out = ox.createImageData(ow, oh), od = out.data;
+    for (let v = 0; v < oh; v++) {
+      const vv = v + 0.5;
+      let nx = b * vv + c + a * 0.5, ny = e * vv + f + d * 0.5, dn = hh * vv + 1 + g * 0.5;
+      let j = v * ow * 4;
+      for (let u = 0; u < ow; u++, j += 4) {
+        const X = nx / dn - 0.5, Y = ny / dn - 0.5; nx += a; ny += d; dn += g;
+        let x0 = Math.floor(X), y0 = Math.floor(Y), fx = X - x0, fy = Y - y0;
+        if (x0 < 0) { x0 = 0; fx = 0; } else if (x0 > sw - 2) { x0 = sw - 2; fx = 1; }
+        if (y0 < 0) { y0 = 0; fy = 0; } else if (y0 > sh - 2) { y0 = sh - 2; fy = 1; }
+        const i00 = (y0 * sw + x0) * 4, i10 = i00 + 4, i01 = i00 + sw * 4, i11 = i01 + 4;
+        for (let ch = 0; ch < 3; ch++) od[j + ch] = (sd[i00 + ch] * (1 - fx) + sd[i10 + ch] * fx) * (1 - fy) + (sd[i01 + ch] * (1 - fx) + sd[i11 + ch] * fx) * fy;
+        od[j + 3] = 255;
+      }
+    }
+    ox.putImageData(out, 0, 0); return oc;
+  }
+  function integral(g, w, h) {
+    const W = w + 1, I = new Uint32Array(W * (h + 1));
+    for (let y = 0; y < h; y++) { let s = 0; for (let x = 0; x < w; x++) { s += g[y * w + x]; I[(y + 1) * W + x + 1] = I[y * W + x + 1] + s; } }
+    return I;
+  }
+  function boxMean(I, w, h, x, y, r) {
+    const W = w + 1, x0 = Math.max(0, x - r), x1 = Math.min(w, x + r + 1), y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
+    return (I[y1 * W + x1] - I[y0 * W + x1] - I[y1 * W + x0] + I[y0 * W + x0]) / ((x1 - x0) * (y1 - y0));
+  }
+  function filt(d, w, h, f) {
+    const n = w * h, g = toGray(d, n);
+    if (f === 'gray') { for (let i = 0, j = 0; i < n; i++, j += 4) d[j] = d[j + 1] = d[j + 2] = g[i]; return; }
+    const I = integral(g, w, h);
+    if (f === 'bw') {
+      const r = Math.max(8, Math.round(Math.min(w, h) / 28));
+      for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
+        const m = boxMean(I, w, h, x, y, r), v = (g[i] < m * 0.86 && g[i] < m - 8) ? 0 : 255, j = i * 4;
+        d[j] = d[j + 1] = d[j + 2] = v;
+      }
+      return;
+    }
+    if (f === 'enh') {
+      // Kâğıt arka planını blok bazında en parlak değerlerden tahmin et (yazı arka planı karartmasın)
+      const B = Math.max(8, Math.ceil(Math.min(w, h) / 40)), gw = Math.ceil(w / B), gh = Math.ceil(h / B);
+      let G = new Float32Array(gw * gh);
+      for (let by = 0; by < gh; by++) for (let bx = 0; bx < gw; bx++) {
+        const hs = new Uint16Array(256); let n = 0;
+        for (let y = by * B; y < Math.min(h, by * B + B); y += 2) for (let x = bx * B; x < Math.min(w, bx * B + B); x += 2) { hs[g[y * w + x]]++; n++; }
+        G[by * gw + bx] = pct(hs, n, 0.9);
+      }
+      for (let it = 0; it < 2; it++) { // yumuşat
+        const T = new Float32Array(gw * gh);
+        for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) { let s = 0, c = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const yy = y + dy, xx = x + dx; if (yy >= 0 && yy < gh && xx >= 0 && xx < gw) { s += G[yy * gw + xx]; c++; } } T[y * gw + x] = s / c; }
+        G = T;
+      }
+      for (let y = 0, i = 0; y < h; y++) {
+        const gy = clamp((y + 0.5) / B - 0.5, 0, gh - 1), y0 = Math.floor(gy), y1 = Math.min(gh - 1, y0 + 1), fy = gy - y0;
+        for (let x = 0; x < w; x++, i++) {
+          const gx = clamp((x + 0.5) / B - 0.5, 0, gw - 1), x0 = Math.floor(gx), x1 = Math.min(gw - 1, x0 + 1), fx = gx - x0;
+          const bg = (G[y0 * gw + x0] * (1 - fx) + G[y0 * gw + x1] * fx) * (1 - fy) + (G[y1 * gw + x0] * (1 - fx) + G[y1 * gw + x1] * fx) * fy;
+          const k = 255 / Math.max(bg, 50), j = i * 4;
+          for (let c = 0; c < 3; c++) d[j + c] = clamp((d[j + c] * k - 30) * 255 / 225, 0, 255);
+        }
+      }
+    }
+  }
+  function rot90(c) { const [o, x] = mk(c.height, c.width); x.translate(c.height, 0); x.rotate(Math.PI / 2); x.drawImage(c, 0, 0); return o; }
+
+  // ================= PDF =================
+  function makePdf(pg) {
+    const enc = new TextEncoder(), parts = [], offs = []; let len = 0;
+    const push = s => { const u = typeof s === 'string' ? enc.encode(s) : s; parts.push(u); len += u.length; };
+    const obj = (n, body) => { offs[n] = len; push(n + ' 0 obj\n' + body + '\nendobj\n'); };
+    push('%PDF-1.4\n%âãÏÓ\n');
+    const N = pg.length;
+    obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    obj(2, '<< /Type /Pages /Kids [' + pg.map((_, k) => (3 + 3 * k) + ' 0 R').join(' ') + '] /Count ' + N + ' >>');
+    pg.forEach((p, k) => {
+      const sc = 842 / Math.max(p.w, p.h), W = (p.w * sc).toFixed(2), H = (p.h * sc).toFixed(2);
+      obj(3 + 3 * k, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W + ' ' + H + '] /Resources << /XObject << /Im0 ' + (5 + 3 * k) + ' 0 R >> >> /Contents ' + (4 + 3 * k) + ' 0 R >>');
+      const cs = 'q ' + W + ' 0 0 ' + H + ' 0 0 cm /Im0 Do Q';
+      obj(4 + 3 * k, '<< /Length ' + cs.length + ' >>\nstream\n' + cs + '\nendstream');
+      offs[5 + 3 * k] = len;
+      push((5 + 3 * k) + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + p.w + ' /Height ' + p.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + p.bytes.length + ' >>\nstream\n');
+      push(p.bytes); push('\nendstream\nendobj\n');
+    });
+    const total = 3 + 3 * N, xref = len;
+    let x = 'xref\n0 ' + total + '\n0000000000 65535 f \n';
+    for (let i = 1; i < total; i++) x += String(offs[i]).padStart(10, '0') + ' 00000 n \n';
+    push(x + 'trailer\n<< /Size ' + total + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+    return new Blob(parts, { type: 'application/pdf' });
+  }
+
+  // ================= EXIF (konum) =================
+  function exifOrientation(seg) {
+    try {
+      const t = 10, le = seg[t] === 0x49;
+      const r16 = o => le ? seg[t + o] | (seg[t + o + 1] << 8) : (seg[t + o] << 8) | seg[t + o + 1];
+      const r32 = o => le ? (seg[t + o] | (seg[t + o + 1] << 8) | (seg[t + o + 2] << 16) | (seg[t + o + 3] << 24)) >>> 0 : ((seg[t + o] << 24) | (seg[t + o + 1] << 16) | (seg[t + o + 2] << 8) | seg[t + o + 3]) >>> 0;
+      const ifd = r32(4), n = r16(ifd);
+      for (let k = 0; k < n; k++) { const e = ifd + 2 + k * 12; if (r16(e) === 0x0112) return r16(e + 8); }
+    } catch (e) {}
+    return 0;
+  }
+  function buildExif(orient, pos, heading, date) {
+    const ascii = s => { const a = new Uint8Array(s.length + 1); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0x7f; return a; };
+    const u16 = v => new Uint8Array([v & 255, v >> 8 & 255]);
+    const u32 = v => new Uint8Array([v & 255, v >> 8 & 255, v >> 16 & 255, v >>> 24 & 255]);
+    const rats = arr => { const a = new Uint8Array(arr.length * 8); arr.forEach((r, i) => { a.set(u32(r[0]), i * 8); a.set(u32(r[1]), i * 8 + 4); }); return a; };
+    const E = (tag, type, count, value) => ({ tag, type, count, value });
+    const p = n => String(n).padStart(2, '0');
+    const ds = date.getFullYear() + ':' + p(date.getMonth() + 1) + ':' + p(date.getDate()) + ' ' + p(date.getHours()) + ':' + p(date.getMinutes()) + ':' + p(date.getSeconds());
+    const ifd0 = [E(0x0131, 2, 7, ascii('Kamera')), E(0x0132, 2, 20, ascii(ds)), E(0x8769, 4, 1, u32(0)), E(0x8825, 4, 1, u32(0))];
+    if (orient) ifd0.push(E(0x0112, 3, 1, new Uint8Array([orient & 255, 0, 0, 0])));
+    const exif = [E(0x9003, 2, 20, ascii(ds)), E(0x9004, 2, 20, ascii(ds))];
+    const dms = v => { v = Math.abs(v); const d = Math.floor(v), mf = (v - d) * 60, m = Math.floor(mf), s = Math.round((mf - m) * 60 * 1000); return [[d, 1], [m, 1], [s, 1000]]; };
+    const gps = [E(0x0000, 1, 4, new Uint8Array([2, 3, 0, 0])),
+      E(0x0001, 2, 2, ascii(pos.latitude >= 0 ? 'N' : 'S')), E(0x0002, 5, 3, rats(dms(pos.latitude))),
+      E(0x0003, 2, 2, ascii(pos.longitude >= 0 ? 'E' : 'W')), E(0x0004, 5, 3, rats(dms(pos.longitude)))];
+    if (pos.altitude != null && isFinite(pos.altitude)) { gps.push(E(0x0005, 1, 1, new Uint8Array([pos.altitude < 0 ? 1 : 0, 0, 0, 0]))); gps.push(E(0x0006, 5, 1, rats([[Math.round(Math.abs(pos.altitude) * 100), 100]]))); }
+    if (heading != null && isFinite(heading)) { gps.push(E(0x0010, 2, 2, ascii('M'))); gps.push(E(0x0011, 5, 1, rats([[Math.round(heading * 100), 100]]))); }
+    [ifd0, exif, gps].forEach(a => a.sort((x, y) => x.tag - y.tag));
+    const size = es => { let s = 2 + es.length * 12 + 4; es.forEach(e => { if (e.value.length > 4) s += e.value.length + (e.value.length & 1); }); return s; };
+    const o0 = 8, o1 = o0 + size(ifd0), o2 = o1 + size(exif), total = o2 + size(gps);
+    ifd0.find(e => e.tag === 0x8769).value = u32(o1);
+    ifd0.find(e => e.tag === 0x8825).value = u32(o2);
+    const buf = new Uint8Array(total), dv = new DataView(buf.buffer);
+    buf.set([0x49, 0x49, 0x2a, 0x00]); dv.setUint32(4, 8, true);
+    const write = (off, es) => {
+      dv.setUint16(off, es.length, true); let data = off + 2 + es.length * 12 + 4;
+      es.forEach((e, k) => {
+        const q = off + 2 + k * 12; dv.setUint16(q, e.tag, true); dv.setUint16(q + 2, e.type, true); dv.setUint32(q + 4, e.count, true);
+        if (e.value.length <= 4) buf.set(e.value, q + 8); else { dv.setUint32(q + 8, data, true); buf.set(e.value, data); data += e.value.length + (e.value.length & 1); }
+      });
+      dv.setUint32(off + 2 + es.length * 12, 0, true);
+    };
+    write(o0, ifd0); write(o1, exif); write(o2, gps);
+    const L = 2 + 6 + total, app = new Uint8Array(2 + L);
+    app.set([0xFF, 0xE1, L >> 8, L & 255, 0x45, 0x78, 0x69, 0x66, 0, 0]); app.set(buf, 10);
+    return app;
+  }
+  async function withExif(blob) {
+    if (!S.geo || !M.pos) return blob;
+    try {
+      const u8 = new Uint8Array(await blob.arrayBuffer());
+      if (u8[0] !== 0xFF || u8[1] !== 0xD8) return blob;
+      let i = 2, orient = 0; const keep = [];
+      while (i + 4 <= u8.length && u8[i] === 0xFF) {
+        const mkr = u8[i + 1]; if (mkr === 0xDA) break;
+        const len = (u8[i + 2] << 8) | u8[i + 3], seg = u8.subarray(i, i + 2 + len);
+        if (mkr === 0xE1 && seg[4] === 0x45 && seg[5] === 0x78 && seg[6] === 0x69 && seg[7] === 0x66) orient = exifOrientation(seg) || orient;
+        else keep.push(seg);
+        i += 2 + len;
+      }
+      const app = buildExif(orient, M.pos, M.heading, new Date());
+      const out = new Blob([u8.subarray(0, 2), app].concat(keep, [u8.subarray(i)]), { type: 'image/jpeg' });
+      out._geo = true; return out;
+    } catch (e) { return blob; }
+  }
+
+  // ================= FOTOĞRAF ÇEKİMİ =================
+  async function refocus() {
+    const c = (track && track._caps) || {};
+    if (mode !== 'pro' && c.focusMode && c.focusMode.includes('single-shot')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); await sleep(700); } catch (e) {} }
+  }
+  async function backToContinuous() {
+    const c = (track && track._caps) || {};
+    if (mode !== 'pro' && c.focusMode && c.focusMode.includes('continuous')) { try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {} }
+  }
+  async function takeOne(q) {
+    let blob = null, how = 'önizleme karesi';
     if (imageCapture && imageCapture.takePhoto) {
       try {
-        let settings = {};
-        if (qIdx > 0) {
+        const st = {};
+        if (q > 0) {
           try {
             const pc = await imageCapture.getPhotoCapabilities();
             if (pc.imageWidth && pc.imageHeight) {
-              if (qIdx === 1) { settings.imageWidth = pc.imageWidth.max; settings.imageHeight = pc.imageHeight.max; }
-              else {
-                const k = Math.sqrt(12e6 / (pc.imageWidth.max * pc.imageHeight.max));
-                if (k < 1) {
-                  settings.imageWidth = Math.max(pc.imageWidth.min, Math.round(pc.imageWidth.max * k));
-                  settings.imageHeight = Math.max(pc.imageHeight.min, Math.round(pc.imageHeight.max * k));
-                }
-              }
+              if (q === 1) { st.imageWidth = pc.imageWidth.max; st.imageHeight = pc.imageHeight.max; }
+              else { const k = Math.sqrt(12e6 / (pc.imageWidth.max * pc.imageHeight.max)); if (k < 1) { st.imageWidth = Math.max(pc.imageWidth.min, Math.round(pc.imageWidth.max * k)); st.imageHeight = Math.max(pc.imageHeight.min, Math.round(pc.imageHeight.max * k)); } }
             }
           } catch (e) {}
         }
-        try { blob = await imageCapture.takePhoto(settings); how = 'tam fotoğraf modu'; }
-        catch (e) { blob = await imageCapture.takePhoto(); how = 'tam fotoğraf modu (varsayılan)'; }
+        try { blob = await imageCapture.takePhoto(st); } catch (e) { blob = await imageCapture.takePhoto(); }
+        how = 'tam fotoğraf';
       } catch (e) { blob = null; }
     }
     if (!blob) {
-      const c = document.createElement('canvas');
-      c.width = video.videoWidth; c.height = video.videoHeight;
-      c.getContext('2d').drawImage(video, 0, 0);
-      blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95));
+      const [c, x] = mk(video.videoWidth, video.videoHeight); x.drawImage(video, 0, 0);
+      blob = await toJpeg(c, 0.95);
     }
-    // sürekli odağa geri dön
-    if (caps.focusMode && caps.focusMode.includes('continuous')) {
-      try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    return { blob, how };
+  }
+  async function takeBest(n) {
+    await refocus();
+    let best = null, bs = -1;
+    for (let i = 0; i < n; i++) {
+      if (n > 1) showBusy('Çekiliyor ' + (i + 1) + '/' + n);
+      const r = await takeOne(mode === 'doc' ? 0 : S.photoQ);
+      if (n === 1) { best = r; break; }
+      let s = 0; try { s = await blobSharp(r.blob); } catch (e) {}
+      if (s > bs) { bs = s; best = r; }
     }
-    blob._how = how;
-    return blob;
+    await backToContinuous();
+    if (n > 1) best.how += ' · ' + n + ' kareden en neti';
+    return best;
   }
 
-  // ---------- VİDEO ----------
+  // Gece modu: kareleri hizalayıp ortalar (kumlanmayı azaltır)
+  function sad(ref, cur, w, h, dx0, dx1, dy0, dy1, m, step) {
+    const x0 = Math.max(Math.floor(w * m), -dx0, 0), x1 = Math.min(w - Math.floor(w * m), w - dx1, w);
+    const y0 = Math.max(Math.floor(h * m), -dy0, 0), y1 = Math.min(h - Math.floor(h * m), h - dy1, h);
+    let best = Infinity, bx = 0, by = 0;
+    for (let dy = dy0; dy <= dy1; dy++) for (let dx = dx0; dx <= dx1; dx++) {
+      let s = 0;
+      for (let y = y0; y < y1 && s < best; y += step) { const ro = y * w, co = (y + dy) * w + dx; for (let x = x0; x < x1; x += step) s += Math.abs(ref[ro + x] - cur[co + x]); }
+      if (s < best) { best = s; bx = dx; by = dy; }
+    }
+    return [bx, by];
+  }
+  const nextFrame = () => video.requestVideoFrameCallback ? new Promise(r => video.requestVideoFrameCallback(() => r())) : sleep(34);
+  async function nightShot() {
+    const K = 10, vw = video.videoWidth, vh = video.videoHeight;
+    const [c, cx] = mk(vw, vh), f = Math.max(1, vw / 480), sw = Math.round(vw / f), sh = Math.round(vh / f), [sc, sx] = mk(sw, sh);
+    const acc = new Float32Array(vw * vh * 3), R = 8, r2 = Math.ceil(f) + 1;
+    let refS = null, refF = null;
+    for (let k = 0; k < K; k++) {
+      showBusy('Gece çekimi ' + (k + 1) + '/' + K + '\nsabit tutun');
+      await nextFrame();
+      cx.drawImage(video, 0, 0, vw, vh); sx.drawImage(c, 0, 0, sw, sh);
+      const sg = toGray(sx.getImageData(0, 0, sw, sh).data, sw * sh), d = cx.getImageData(0, 0, vw, vh).data, fg = toGray(d, vw * vh);
+      let dx = 0, dy = 0;
+      if (!refS) { refS = sg; refF = fg; }
+      else {
+        const a = sad(refS, sg, sw, sh, -R, R, -R, R, 0.2, 2), gx = Math.round(a[0] * f), gy = Math.round(a[1] * f);
+        const b = sad(refF, fg, vw, vh, gx - r2, gx + r2, gy - r2, gy + r2, 0.4, 4); dx = b[0]; dy = b[1];
+      }
+      for (let y = 0; y < vh; y++) {
+        const row = clamp(y + dy, 0, vh - 1) * vw; let o = y * vw * 3;
+        for (let x = 0; x < vw; x++, o += 3) { const j = (row + clamp(x + dx, 0, vw - 1)) * 4; acc[o] += d[j]; acc[o + 1] += d[j + 1]; acc[o + 2] += d[j + 2]; }
+      }
+    }
+    showBusy('Birleştiriliyor…'); await sleep(20);
+    const n = vw * vh, hist = new Uint32Array(256);
+    for (let i = 0, o = 0; i < n; i++, o += 3) hist[clamp(((acc[o] * 77 + acc[o + 1] * 150 + acc[o + 2] * 29) / K) >> 8, 0, 255)]++;
+    const lo = Math.min(pct(hist, n, 0.003), 40), hi = Math.max(pct(hist, n, 0.997), 180);
+    const lut = new Uint8Array(256); for (let v = 0; v < 256; v++) lut[v] = Math.round(255 * Math.pow(clamp((v - lo) / (hi - lo), 0, 1), 0.85));
+    const out = cx.createImageData(vw, vh), od = out.data;
+    for (let i = 0, o = 0, j = 0; i < n; i++, o += 3, j += 4) {
+      od[j] = lut[clamp(Math.round(acc[o] / K), 0, 255)]; od[j + 1] = lut[clamp(Math.round(acc[o + 1] / K), 0, 255)]; od[j + 2] = lut[clamp(Math.round(acc[o + 2] / K), 0, 255)]; od[j + 3] = 255;
+    }
+    cx.putImageData(out, 0, 0);
+    return { blob: await toJpeg(c, 0.93), how: 'gece · ' + K + ' kare birleştirildi' };
+  }
+
+  async function ensureJpeg(blob) {
+    const h = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    if (h[0] === 0xFF && h[1] === 0xD8) return blob;
+    const bm = await createImageBitmap(blob), [c, x] = mk(bm.width, bm.height); x.drawImage(bm, 0, 0); bm.close();
+    return await toJpeg(c, 0.95);
+  }
+  async function finishPhoto(r, prefix) {
+    let blob = r.blob, how = r.how;
+    if (S.thermal) { showBusy('Termal efekt…'); blob = await thermalBlob(blob); how += ' · termal efekt'; }
+    blob = await withExif(await ensureJpeg(blob));
+    if (blob._geo) how += ' · konumlu';
+    else if (S.geo) how += ' · konum henüz alınamadı';
+    setLast(blob, prefix + '_' + stamp() + '.jpg', 'image/jpeg');
+    saveFile();
+    let dims = '';
+    try { const bm = await createImageBitmap(blob); dims = bm.width + '×' + bm.height + ' · '; bm.close(); } catch (e) {}
+    toast('Kaydedildi: ' + dims + how, 4000);
+  }
+
+  // ================= PRO =================
+  function buildPro() {
+    const box = $('pro'); box.innerHTML = '';
+    if (mode !== 'pro' || !track) { box.style.display = 'none'; return; }
+    box.style.display = 'flex';
+    const c = track._caps || {}, st = track.getSettings ? track.getSettings() : {};
+    const has = (k, v) => c[k] && c[k].includes && c[k].includes(v);
+    let any = false;
+    const add = (label, cap, cur, make, fmt, log) => {
+      if (!cap || !(cap.max > cap.min)) return; any = true;
+      const r = document.createElement('div'); r.className = 'r';
+      const L = document.createElement('span'); L.textContent = label;
+      const inp = document.createElement('input'); inp.type = 'range';
+      const B = document.createElement('b');
+      const lg = log && cap.min > 0;
+      const toV = lg ? s => cap.min * Math.pow(cap.max / cap.min, s / 1000) : s => s;
+      const toS = lg ? v => 1000 * Math.log(v / cap.min) / Math.log(cap.max / cap.min) : v => v;
+      if (lg) { inp.min = 0; inp.max = 1000; inp.step = 1; } else { inp.min = cap.min; inp.max = cap.max; inp.step = cap.step || (cap.max - cap.min) / 100; }
+      const v0 = cur != null ? cur : (cap.min + cap.max) / 2; inp.value = toS(v0); B.textContent = fmt(v0);
+      let pending = null, running = false;
+      const pump = async () => { running = true; while (pending != null) { const v = pending; pending = null; try { await track.applyConstraints({ advanced: [make(v)] }); } catch (e) { toast('Ayarlanamadı: ' + label); } } running = false; };
+      inp.addEventListener('input', () => { const v = toV(+inp.value); B.textContent = fmt(v); pending = v; if (!running) pump(); });
+      r.append(L, inp, B); box.appendChild(r);
+    };
+    const man = has('exposureMode', 'manual');
+    add('Pozlama ±', c.exposureCompensation, st.exposureCompensation, v => ({ exposureCompensation: v }), v => (v > 0 ? '+' : '') + v.toFixed(1) + ' EV');
+    if (man) add('Enstantane', c.exposureTime, st.exposureTime, v => ({ exposureMode: 'manual', exposureTime: v }), v => { const s = v / 10000; return s < 1 ? '1/' + Math.round(1 / s) + ' sn' : s.toFixed(1) + ' sn'; }, true);
+    add('ISO', c.iso, st.iso, v => man ? { exposureMode: 'manual', iso: Math.round(v) } : { iso: Math.round(v) }, v => 'ISO ' + Math.round(v));
+    if (has('whiteBalanceMode', 'manual')) add('Renk ısısı', c.colorTemperature, st.colorTemperature, v => ({ whiteBalanceMode: 'manual', colorTemperature: Math.round(v) }), v => Math.round(v) + ' K');
+    if (has('focusMode', 'manual')) add('Elle odak', c.focusDistance, st.focusDistance, v => ({ focusMode: 'manual', focusDistance: v }), v => v.toFixed(2) + ' m');
+    const r = document.createElement('div'); r.className = 'btns'; r.style.justifyContent = 'center';
+    if (any) {
+      const b = document.createElement('button'); b.textContent = 'Hepsini otomatiğe al';
+      b.addEventListener('click', async () => {
+        const a = {};
+        if (has('exposureMode', 'continuous')) a.exposureMode = 'continuous';
+        if (has('whiteBalanceMode', 'continuous')) a.whiteBalanceMode = 'continuous';
+        if (has('focusMode', 'continuous')) a.focusMode = 'continuous';
+        if (c.exposureCompensation) a.exposureCompensation = 0;
+        try { await track.applyConstraints({ advanced: [a] }); } catch (e) {}
+        buildPro();
+      });
+      r.appendChild(b);
+    } else { const s = document.createElement('div'); s.style.cssText = 'opacity:.7;text-align:center'; s.textContent = 'Bu kamera Chrome\'a elle ayar (ISO, enstantane, odak) açmıyor.'; r.appendChild(s); }
+    box.appendChild(r);
+  }
+
+  // ================= BARKOD =================
+  let bd = null, scanT = null, scanBusy = false, lastCode = '', scanBoxes = [];
+  async function startScan() {
+    if (!('BarcodeDetector' in window)) { toast('Bu cihazdaki Chrome barkod okumayı desteklemiyor', 4000); return; }
+    try { bd = new BarcodeDetector({ formats: await BarcodeDetector.getSupportedFormats() }); }
+    catch (e) { try { bd = new BarcodeDetector(); } catch (e2) { toast('Barkod okuyucu başlatılamadı'); return; } }
+    clearInterval(scanT); scanT = setInterval(scanOnce, 250);
+  }
+  function stopScan() { clearInterval(scanT); scanT = null; scanBoxes = []; $('scanCard').style.display = 'none'; }
+  async function scanOnce() {
+    if (scanBusy || !bd || !video.videoWidth || mode !== 'scan') return;
+    scanBusy = true;
+    try {
+      const r = await bd.detect(video);
+      scanBoxes = r.map(o => o.cornerPoints || []);
+      if (r.length && r[0].rawValue !== lastCode) {
+        lastCode = r[0].rawValue;
+        $('scFmt').textContent = (r[0].format || '').replace(/_/g, ' ').toUpperCase();
+        $('scText').textContent = lastCode;
+        $('scOpen').style.display = /^https?:\/\//i.test(lastCode) ? '' : 'none';
+        $('scanCard').style.display = 'block'; vibrate(60);
+      }
+    } catch (e) {}
+    scanBusy = false;
+  }
+  $('scCopy').addEventListener('click', () => {
+    (navigator.clipboard ? navigator.clipboard.writeText(lastCode) : Promise.reject()).then(() => toast('Kopyalandı')).catch(() => {
+      const r = document.createRange(); r.selectNodeContents($('scText')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast('Metin seçildi, kopyalayın');
+    });
+  });
+  $('scOpen').addEventListener('click', () => { window.open(lastCode, '_blank', 'noopener'); });
+  $('scClose').addEventListener('click', () => { $('scanCard').style.display = 'none'; });
+
+  // ================= CANLI KATMAN (termal, zebra, histogram, belge çerçevesi) =================
+  const [aC, aX] = mk(320, 180), [zC, zX] = mk(320, 180);
+  let lastSlow = 0, docLive = null, zebraPhase = 0, loopOn = false;
+  function drawHist(d, n) {
+    const c = $('hist'), x = c.getContext('2d'), b = new Uint32Array(64);
+    for (let j = 0; j < n * 4; j += 4) b[(d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 10]++;
+    let mx = 1; for (let i = 0; i < 64; i++) if (b[i] > mx) mx = b[i];
+    x.clearRect(0, 0, 128, 64); x.fillStyle = 'rgba(255,255,255,.85)';
+    for (let i = 0; i < 64; i++) { const hh = Math.round(60 * Math.sqrt(b[i] / mx)); x.fillRect(i * 2, 64 - hh, 2, hh); }
+    if (b[63] > n * 0.02) { x.fillStyle = '#ff5252'; x.fillRect(124, 0, 4, 64); }
+    if (b[0] > n * 0.02) { x.fillStyle = '#4aa3ff'; x.fillRect(0, 0, 4, 64); }
+  }
+  function overlay(t) {
+    requestAnimationFrame(overlay);
+    sensorsTick();
+    if (!track || !video.videoWidth || !started() || document.hidden) return;
+    const fx = $('fx'), ctx = fx.getContext('2d');
+    const thermal = S.thermal && ['photo', 'pro', 'night'].includes(mode);
+    const slow = t - lastSlow > 125;
+    if (!thermal && !slow) return;
+    if (slow) lastSlow = t;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    let frame = null, fw = 0, fh = 0;
+    const live = mode !== 'video' && mode !== 'scan';
+    if (thermal || (slow && live && (S.zebra || S.hist || mode === 'doc'))) {
+      fw = thermal ? 480 : 320; fh = Math.max(1, Math.round(fw * vh / vw));
+      if (aC.width !== fw || aC.height !== fh) { aC.width = fw; aC.height = fh; }
+      aX.drawImage(video, 0, 0, fw, fh); frame = aX.getImageData(0, 0, fw, fh);
+    }
+    if (slow && frame) {
+      if (S.hist) drawHist(frame.data, fw * fh);
+      if (mode === 'doc') {
+        const q = detectDoc(toGray(frame.data, fw * fh), fw, fh);
+        docLive = q ? (docLive ? q.map((p, i) => [docLive[i][0] * 0.5 + p[0] * 0.5, docLive[i][1] * 0.5 + p[1] * 0.5]) : q) : null;
+      }
+      if (S.zebra) {
+        if (zC.width !== fw || zC.height !== fh) { zC.width = fw; zC.height = fh; }
+        const zi = zX.createImageData(fw, fh), zd = zi.data, d = frame.data; zebraPhase = (zebraPhase + 1) & 7;
+        for (let y = 0, j = 0; y < fh; y++) for (let x = 0; x < fw; x++, j += 4)
+          if ((d[j] >= 250 || d[j + 1] >= 250 || d[j + 2] >= 250) && ((x + y + zebraPhase) & 7) < 4) { zd[j] = 255; zd[j + 1] = 40; zd[j + 2] = 40; zd[j + 3] = 200; }
+        zX.putImageData(zi, 0, 0);
+      }
+    }
+    ctx.clearRect(0, 0, fx.width, fx.height);
+    if (thermal && frame) { thermalize(frame.data, fw * fh); aX.putImageData(frame, 0, 0); ctx.imageSmoothingEnabled = true; ctx.drawImage(aC, 0, 0, fx.width, fx.height); }
+    if (S.zebra && live) { ctx.imageSmoothingEnabled = false; ctx.drawImage(zC, 0, 0, fx.width, fx.height); }
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const poly = (pts, sx, sy, col, fill) => {
+      if (!pts || pts.length < 3) return;
+      ctx.beginPath(); pts.forEach((p, i) => { const X = p[0] * sx, Y = p[1] * sy; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }); ctx.closePath();
+      ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 3 * dpr; ctx.strokeStyle = col; ctx.stroke();
+    };
+    if (mode === 'doc' && docLive) poly(docLive, fx.width, fx.height, '#5df58a', 'rgba(93,245,138,.15)');
+    if (mode === 'scan') scanBoxes.forEach(b => poly(b.map(p => [p.x, p.y]), fx.width / vw, fx.height / vh, '#4aa3ff', 'rgba(74,163,255,.2)'));
+  }
+
+  // ================= BELGE DÜZENLEYİCİ =================
+  const D = { src: null, w: 0, h: 0, quad: null, auto: null, stage: 'c', warp: null, out: null, filter: 'enh', drag: -1, off: [0, 0], view: null };
+  const docOpen = () => $('doc').style.display === 'flex';
+  function fullQuad() { const m = 0.04; return [[D.w * m, D.h * m], [D.w * (1 - m), D.h * m], [D.w * (1 - m), D.h * (1 - m)], [D.w * m, D.h * (1 - m)]]; }
+  function autoQuad(c) {
+    const sw = 480, sh = Math.round(480 * c.height / c.width), [s, sx] = mk(sw, sh); sx.drawImage(c, 0, 0, sw, sh);
+    const q = detectDoc(toGray(sx.getImageData(0, 0, sw, sh).data, sw * sh), sw, sh);
+    return q ? q.map(p => [p[0] * c.width, p[1] * c.height]) : null;
+  }
+  async function openDoc(r) {
+    showBusy('Hazırlanıyor…');
+    const bm = await decodeCapped(r.blob, 4096), [c, x] = mk(bm.width, bm.height); x.drawImage(bm, 0, 0); bm.close();
+    D.src = c; D.w = c.width; D.h = c.height; D.auto = autoQuad(c); D.quad = D.auto || fullQuad();
+    D.stage = 'c'; D.filter = 'enh'; D.warp = D.out = null;
+    $('doc').style.display = 'flex'; hideBusy(); docUI();
+    if (!D.auto) toast('Kenarlar bulunamadı, köşeleri elle ayarlayın', 3000);
+    requestAnimationFrame(drawDoc);
+  }
+  function closeDoc() { $('doc').style.display = 'none'; D.src = D.warp = D.out = null; }
+  function docUI() {
+    const c = D.stage === 'c';
+    $('docHd').textContent = c ? 'Köşeleri belgenin kenarlarına sürükleyin' : 'Filtre seçin ve kaydedin';
+    $('docC').style.display = c ? 'flex' : 'none'; $('docR').style.display = c ? 'none' : 'flex'; $('chips').style.display = c ? 'none' : 'flex';
+    $('chips').querySelectorAll('button').forEach(b => b.classList.toggle('act', b.dataset.f === D.filter));
+  }
+  function drawDoc() {
+    const cv = $('dc'), dpr = Math.min(window.devicePixelRatio || 1, 2), W = Math.round(cv.clientWidth * dpr), H = Math.round(cv.clientHeight * dpr);
+    if (!W || !H) return;
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const x = cv.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, W, H);
+    const img = D.stage === 'c' ? D.src : D.out; if (!img) return;
+    const pad = (D.stage === 'c' ? 28 : 8) * dpr, k = Math.min((W - 2 * pad) / img.width, (H - 2 * pad) / img.height);
+    const ox = (W - img.width * k) / 2, oy = (H - img.height * k) / 2; D.view = { k, ox, oy, dpr };
+    x.imageSmoothingQuality = 'high'; x.drawImage(img, ox, oy, img.width * k, img.height * k);
+    if (D.stage !== 'c') return;
+    const P = D.quad.map(p => [ox + p[0] * k, oy + p[1] * k]);
+    x.beginPath(); P.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath();
+    x.fillStyle = 'rgba(93,245,138,.15)'; x.fill(); x.lineWidth = 2.5 * dpr; x.strokeStyle = '#5df58a'; x.stroke();
+    P.forEach((p, i) => { x.beginPath(); x.arc(p[0], p[1], (i === D.drag ? 18 : 13) * dpr, 0, 7); x.fillStyle = 'rgba(255,213,74,.35)'; x.fill(); x.lineWidth = 2 * dpr; x.strokeStyle = '#ffd54a'; x.stroke(); });
+    if (D.drag >= 0) { // büyüteç
+      const q = D.quad[D.drag], R = 60 * dpr, zoom = 2.5, mx = P[D.drag][0] < W / 2 ? W - R - 12 * dpr : R + 12 * dpr, my = R + 12 * dpr, sz = 2 * R / (k * zoom);
+      x.save(); x.beginPath(); x.arc(mx, my, R, 0, 7); x.clip(); x.fillStyle = '#000'; x.fillRect(mx - R, my - R, 2 * R, 2 * R);
+      x.drawImage(D.src, q[0] - sz / 2, q[1] - sz / 2, sz, sz, mx - R, my - R, 2 * R, 2 * R); x.restore();
+      x.beginPath(); x.arc(mx, my, R, 0, 7); x.strokeStyle = '#fff'; x.lineWidth = 2 * dpr; x.stroke();
+      x.beginPath(); x.moveTo(mx - 10 * dpr, my); x.lineTo(mx + 10 * dpr, my); x.moveTo(mx, my - 10 * dpr); x.lineTo(mx, my + 10 * dpr); x.strokeStyle = '#5df58a'; x.stroke();
+    }
+  }
+  const dc = $('dc');
+  const toImg = e => { const r = dc.getBoundingClientRect(), v = D.view, X = (e.clientX - r.left) * v.dpr, Y = (e.clientY - r.top) * v.dpr; return [(X - v.ox) / v.k, (Y - v.oy) / v.k]; };
+  dc.addEventListener('pointerdown', e => {
+    if (D.stage !== 'c' || !D.view) return;
+    const p = toImg(e); let bi = -1, bdist = 1e9;
+    D.quad.forEach((q, i) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]) * D.view.k / D.view.dpr; if (d < bdist) { bdist = d; bi = i; } });
+    if (bdist < 48) { D.drag = bi; D.off = [D.quad[bi][0] - p[0], D.quad[bi][1] - p[1]]; dc.setPointerCapture(e.pointerId); drawDoc(); }
+  });
+  dc.addEventListener('pointermove', e => { if (D.drag < 0) return; const p = toImg(e); D.quad[D.drag] = [clamp(p[0] + D.off[0], 0, D.w), clamp(p[1] + D.off[1], 0, D.h)]; drawDoc(); });
+  const endDrag = () => { if (D.drag >= 0) { D.drag = -1; drawDoc(); } };
+  dc.addEventListener('pointerup', endDrag); dc.addEventListener('pointercancel', endDrag);
+
+  function applyFilter() {
+    const s = D.warp, w = s.width, h = s.height, [c, x] = mk(w, h); x.drawImage(s, 0, 0);
+    if (D.filter !== 'orig') { const im = x.getImageData(0, 0, w, h); filt(im.data, w, h, D.filter); x.putImageData(im, 0, 0); }
+    D.out = c;
+  }
+  $('dAuto').addEventListener('click', () => { if (D.auto) { D.quad = D.auto.map(p => p.slice()); drawDoc(); } else toast('Kenarlar otomatik bulunamadı'); });
+  $('dFull').addEventListener('click', () => { D.quad = [[0, 0], [D.w, 0], [D.w, D.h], [0, D.h]]; drawDoc(); });
+  $('dCancel').addEventListener('click', closeDoc);
+  $('dNext').addEventListener('click', async () => {
+    showBusy('Düzeltiliyor…'); await sleep(30);
+    D.warp = warpQuad(D.src, orderQuad(D.quad)); applyFilter(); D.stage = 'r'; docUI(); drawDoc(); hideBusy();
+  });
+  $('dBack').addEventListener('click', () => { D.stage = 'c'; docUI(); drawDoc(); });
+  $('dRot').addEventListener('click', async () => { showBusy('Döndürülüyor…'); await sleep(20); D.warp = rot90(D.warp); applyFilter(); drawDoc(); hideBusy(); });
+  $('chips').querySelectorAll('button').forEach(b => b.addEventListener('click', async () => {
+    D.filter = b.dataset.f; docUI(); showBusy('Uygulanıyor…'); await sleep(20); applyFilter(); drawDoc(); hideBusy();
+  }));
+  $('dJpg').addEventListener('click', async () => {
+    let blob = await toJpeg(D.out, 0.92); blob = await withExif(blob);
+    setLast(blob, 'BELGE_' + stamp() + '.jpg', 'image/jpeg'); saveFile(); closeDoc(); toast('Belge kaydedildi');
+  });
+  $('dPdf').addEventListener('click', async () => {
+    const blob = await toJpeg(D.out, 0.88);
+    pages.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: D.out.width, h: D.out.height });
+    updatePdfBar(); closeDoc(); toast('PDF\'e eklendi (' + pages.length + ' sayfa). Sonraki sayfayı çekin veya "PDF kaydet"e basın.', 3500);
+  });
+  function updatePdfBar() { $('pdfN').textContent = pages.length; $('pdfbar').style.display = (mode === 'doc' && pages.length) ? 'flex' : 'none'; }
+  $('pdfSave').addEventListener('click', () => {
+    if (!pages.length) return;
+    setLast(makePdf(pages), 'BELGE_' + stamp() + '.pdf', 'application/pdf'); saveFile();
+    toast('PDF kaydedildi (' + pages.length + ' sayfa)'); pages = []; updatePdfBar();
+  });
+  $('pdfClear').addEventListener('click', () => { pages = []; updatePdfBar(); toast('PDF sayfaları temizlendi'); });
+
+  // ================= VİDEO =================
   function pickMime() {
     const list = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=h264', 'video/webm;codecs=vp9', 'video/webm'];
     return list.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
   }
   async function startRec() {
     let s = stream;
-    try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s = new MediaStream([...stream.getVideoTracks(), ...micStream.getAudioTracks()]);
-    } catch (e) { toast('Mikrofon izni yok: ses kaydedilmeyecek'); micStream = null; }
-    const mime = pickMime();
-    const opts = { videoBitsPerSecond: resOptions[resIdx].w >= 3840 ? 40e6 : resOptions[resIdx].w >= 1920 ? 16e6 : 8e6 };
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); s = new MediaStream([...stream.getVideoTracks(), ...micStream.getAudioTracks()]); }
+    catch (e) { toast('Mikrofon izni yok: ses kaydedilmeyecek'); micStream = null; }
+    const mime = pickMime(), w = VRES[S.vres].w;
+    const opts = { videoBitsPerSecond: w >= 3840 ? 40e6 : w >= 1920 ? 16e6 : 8e6 };
     if (mime) opts.mimeType = mime;
-    chunks = [];
-    recorder = new MediaRecorder(s, opts);
+    chunks = []; recorder = new MediaRecorder(s, opts);
     recorder.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
     recorder.onstop = () => {
-      const type = recorder.mimeType || 'video/webm';
-      const blob = new Blob(chunks, { type });
-      const ext = type.includes('mp4') ? 'mp4' : 'webm';
+      const type = recorder.mimeType || 'video/webm', blob = new Blob(chunks, { type }), ext = type.includes('mp4') ? 'mp4' : 'webm';
       setLast(blob, 'VID_' + stamp() + '.' + ext, type);
       if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
       recorder = null; clearInterval(recTimer);
       $('rec').style.display = 'none'; $('shutter').classList.remove('recording');
-      autoSave();
+      saveFile(); toast('Kaydedildi: İndirilenler/' + last.name, 3000);
     };
-    recorder.start(1000);
-    recStart = Date.now();
+    recorder.start(1000); recStart = Date.now();
     $('rec').style.display = 'block'; $('shutter').classList.add('recording');
-    recTimer = setInterval(() => {
-      const sec = Math.floor((Date.now() - recStart) / 1000), p = n => String(n).padStart(2, '0');
-      $('rec').textContent = '● ' + p(Math.floor(sec / 60)) + ':' + p(sec % 60);
-    }, 500);
+    recTimer = setInterval(() => { const sec = Math.floor((Date.now() - recStart) / 1000), p = n => String(n).padStart(2, '0'); $('rec').textContent = '● ' + p(Math.floor(sec / 60)) + ':' + p(sec % 60); }, 500);
   }
 
-  // ---------- Son çekim / kaydet / paylaş ----------
+  // ================= SON ÇEKİM =================
   function setLast(blob, name, type) {
     if (last && last.url) URL.revokeObjectURL(last.url);
     last = { blob, name, type, url: URL.createObjectURL(blob) };
-    if (type.startsWith('image/')) $('thumb').style.backgroundImage = 'url(' + last.url + ')';
-    else $('thumb').style.backgroundImage = 'none', $('thumb').textContent = '▶';
-    if (type.startsWith('image/')) $('thumb').textContent = '';
+    const th = $('thumb');
+    if (type.startsWith('image/')) { th.style.backgroundImage = 'url(' + last.url + ')'; th.textContent = ''; }
+    else { th.style.backgroundImage = 'none'; th.textContent = type === 'application/pdf' ? '📄' : '▶'; }
   }
-  function saveFile() {
-    if (!last) return;
-    const a = document.createElement('a');
-    a.href = last.url; a.download = last.name; document.body.appendChild(a); a.click(); a.remove();
-  }
-  function autoSave() { saveFile(); toast('Kaydedildi: İndirilenler/' + last.name, 3000); }
-
+  function saveFile() { if (!last) return; const a = document.createElement('a'); a.href = last.url; a.download = last.name; document.body.appendChild(a); a.click(); a.remove(); }
   $('thumb').addEventListener('click', () => {
     if (!last) return;
-    const m = $('pmedia'); m.innerHTML = '';
-    let el;
+    const m = $('pmedia'); m.innerHTML = ''; let el;
     if (last.type.startsWith('image/')) { el = document.createElement('img'); el.src = last.url; }
-    else { el = document.createElement('video'); el.src = last.url; el.controls = true; el.playsInline = true; }
-    el.style.maxWidth = '100%'; el.style.maxHeight = '60vh'; m.appendChild(el);
-    $('panel').style.display = 'flex';
+    else if (last.type.startsWith('video/')) { el = document.createElement('video'); el.src = last.url; el.controls = true; el.playsInline = true; }
+    else { el = document.createElement('div'); el.style.fontSize = '18px'; el.textContent = '📄 ' + last.name; }
+    el.style.maxWidth = '100%'; el.style.maxHeight = '60vh'; m.appendChild(el); $('panel').style.display = 'flex';
   });
   $('pClose').addEventListener('click', () => { $('panel').style.display = 'none'; $('pmedia').innerHTML = ''; });
   $('pSave').addEventListener('click', () => { saveFile(); toast('Kaydedildi'); });
@@ -386,59 +1095,118 @@
     } catch (e) {}
   });
 
-  // ---------- Deklanşör ----------
-  let busy = false;
+  // ================= DEKLANŞÖR =================
   $('shutter').addEventListener('click', async () => {
-    if (!track || busy) return;
-    if (mode === 'photo') {
-      busy = true;
-      for (let i = timerSec; i > 0; i--) { toast(String(i), 1100); await sleep(1000); }
-      $('view').style.opacity = .4; setTimeout(() => $('view').style.opacity = 1, 120);
-      try {
-        const blob = await takePhoto();
-        setLast(blob, 'IMG_' + stamp() + '.jpg', blob.type || 'image/jpeg');
-        saveFile();
-        let dims = '';
-        try { const bm = await createImageBitmap(blob); dims = bm.width + '×' + bm.height + ' · '; bm.close(); } catch (e) {}
-        toast('Kaydedildi: ' + dims + blob._how, 4000);
-      } catch (e) { toast('Çekilemedi: ' + (e && e.name || e)); }
-      busy = false;
-    } else {
-      if (recorder) recorder.stop(); else await startRec();
-    }
+    if (!track || busy || docOpen()) return;
+    if (mode === 'video') { if (recorder) recorder.stop(); else await startRec(); return; }
+    if (mode === 'scan') { lastCode = ''; $('scanCard').style.display = 'none'; toast('Yeniden taranıyor'); return; }
+    busy = true;
+    try {
+      for (let i = timerSec; i > 0; i--) { showBusy(String(i)); vibrate(20); await sleep(1000); }
+      await waitSteady(2500);
+      hideBusy(); $('view').style.opacity = .4; setTimeout(() => $('view').style.opacity = 1, 120); vibrate(25);
+      if (mode === 'night') await finishPhoto(await nightShot(), 'GECE');
+      else if (mode === 'doc') { const r = await takeBest(Math.min(S.burst, 3)); hideBusy(); await openDoc(r); }
+      else await finishPhoto(await takeBest(S.burst), 'IMG');
+    } catch (e) { toast('Çekilemedi: ' + ((e && (e.message || e.name)) || e)); }
+    hideBusy(); busy = false;
   });
 
-  // ---------- Başlat ----------
+  // ================= MODLAR =================
+  MODES.forEach(([k, t]) => { const s = document.createElement('span'); s.dataset.m = k; s.textContent = t; if (k === mode) s.className = 'sel'; s.addEventListener('click', () => setMode(k)); $('modes').appendChild(s); });
+  async function setMode(m) {
+    if (recorder || busy || (m === mode && track)) return;
+    if (mode === 'scan') stopScan();
+    mode = m;
+    document.querySelectorAll('#modes span').forEach(s => s.classList.toggle('sel', s.dataset.m === m));
+    $('shutter').className = m === 'video' ? 'video' : m === 'scan' ? 'scan' : '';
+    docLive = null; updatePdfBar(); applyOpt('*');
+    try { await openCamera(); } catch (e) { toast('Kamera açılamadı: ' + e.name); }
+    if (m === 'scan') startScan();
+    if (m === 'doc') toast('Belgeyi kadraja alın; yeşil çerçeve kenarları gösterir', 2500);
+    if (m === 'night') toast('Gece modu: çekim sırasında telefonu sabit tutun', 2500);
+  }
+
+  // ================= AYAR PANELİ =================
+  const SW = [
+    ['steady', 'Titreme kontrollü deklanşör', 'Telefon durgunlaşınca çeker (jiroskop)'],
+    ['level', 'Ufuk çizgisi / su terazisi', 'Belge modunda telefon yatayken terazi çıkar'],
+    ['grid', 'Izgara', ''],
+    ['hist', 'Histogram', 'Kırmızı: aşırı parlak, mavi: aşırı karanlık'],
+    ['zebra', 'Zebra çizgileri', 'Aşırı parlak (patlayan) yerleri gösterir'],
+    ['thermal', 'Termal görünüm efekti', 'Gerçek sıcaklık ölçmez; parlaklığı ısı renklerine çevirir'],
+    ['voice', 'Sesle çek (alkış)', 'Mikrofonu dinler, ses kaydetmez'],
+    ['geo', 'Fotoğrafa konum ekle', 'GPS ve pusula yönü yalnızca dosyanın içine yazılır']
+  ];
+  const SEL = [
+    ['burst', 'En net kare seçimi', [[1, 'Kapalı (1 kare)'], [3, '3 kare'], [5, '5 kare'], [8, '8 kare']]],
+    ['photoQ', 'Fotoğraf çözünürlüğü', [[0, 'Varsayılan'], [1, 'Maksimum'], [2, '~12 MP']]],
+    ['vres', 'Video çözünürlüğü', [[0, '720p'], [1, '1080p'], [2, '4K']]]
+  ];
+  function buildSheet() {
+    const s = $('sheetBody'); s.innerHTML = '';
+    SW.forEach(([k, t, sub]) => {
+      const row = document.createElement('div'); row.className = 'row';
+      const L = document.createElement('div'); L.textContent = t;
+      if (sub) { const sm = document.createElement('small'); sm.textContent = sub; L.appendChild(sm); }
+      const lab = document.createElement('label'); lab.className = 'sw';
+      const inp = document.createElement('input'); inp.type = 'checkbox'; inp.dataset.k = k; inp.checked = !!S[k];
+      inp.addEventListener('change', () => setOpt(k, inp.checked));
+      lab.append(inp, document.createElement('i')); row.append(L, lab); s.appendChild(row);
+    });
+    SEL.forEach(([k, t, opts]) => {
+      const row = document.createElement('div'); row.className = 'row';
+      const L = document.createElement('div'); L.textContent = t;
+      const sel = document.createElement('select'); sel.dataset.k = k;
+      opts.forEach(([v, n]) => { const o = document.createElement('option'); o.value = v; o.textContent = n; sel.appendChild(o); });
+      sel.value = S[k]; sel.addEventListener('change', () => setOpt(k, +sel.value));
+      row.append(L, sel); s.appendChild(row);
+    });
+  }
+  function syncSheet() { $('sheetBody').querySelectorAll('[data-k]').forEach(e => { if (e.type === 'checkbox') e.checked = !!S[e.dataset.k]; else e.value = S[e.dataset.k]; }); }
+  function setOpt(k, v) { S[k] = v; saveS(); applyOpt(k); }
+  function applyOpt(k) {
+    const all = k === '*';
+    if (all || k === 'grid') $('grid').style.display = S.grid ? 'block' : 'none';
+    if (all || k === 'hist') $('hist').style.display = S.hist && mode !== 'scan' && mode !== 'video' ? 'block' : 'none';
+    if (all || k === 'thermal') $('thermalTag').style.display = S.thermal && ['photo', 'pro', 'night'].includes(mode) ? 'block' : 'none';
+    if (k === 'voice') { if (S.voice) { voiceOn(); toast('Sesle çekim açık: alkışlayın'); } else voiceOff(); }
+    if (k === 'geo') { if (S.geo) { geoOn(); toast('Konum alınıyor…'); } else geoOff(); }
+    if (k === 'vres' && mode === 'video') openCamera().catch(() => {});
+  }
+  const openSheet = o => { $('sheet').style.display = o ? 'block' : 'none'; $('sheetBack').style.display = o ? 'block' : 'none'; };
+  $('bSet').addEventListener('click', () => openSheet(true));
+  $('sheetClose').addEventListener('click', () => openSheet(false));
+  $('sheetBack').addEventListener('click', () => openSheet(false));
+  buildSheet();
+
+  // ================= BAŞLAT =================
   $('go').addEventListener('click', async () => {
     $('err').textContent = '';
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      $('err').textContent = 'Bu tarayıcı kamera erişimini desteklemiyor. Sayfayı Chrome ile açın (dosyayı Dosyalar uygulamasından Chrome ile açmayı deneyin).';
-      return;
-    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $('err').textContent = 'Bu tarayıcı kamera erişimini desteklemiyor. Sayfayı Chrome ile açın.'; return; }
     try {
       await openCamera();
       $('start').style.display = 'none';
+      applyOpt('*');
+      if (S.voice) voiceOn();
+      if (S.geo) geoOn();
+      if (!loopOn) { loopOn = true; requestAnimationFrame(overlay); }
     } catch (e) {
       let msg = 'Kamera açılamadı (' + (e && e.name) + ').';
-      if (!window.isSecureContext || location.protocol === 'content:') {
-        msg += '\n\nSayfa güvenli olmayan bir adresten açılmış (' + location.protocol + '). Chrome bu adreste kamerayı engeller.\nÇözüm: Chrome adres çubuğuna şunu yazın:\nfile:///sdcard/Download/' + 'kamera.html' + '\n(dosya adı farklıysa onu yazın)';
-      } else {
-        msg += '\nChrome menüsü → Ayarlar → Site ayarları → Kamera bölümünden izni kontrol edin.';
-      }
-      $('err').style.textAlign = 'center';
+      if (!window.isSecureContext || location.protocol === 'content:') msg += '\n\nSayfa güvenli olmayan bir adresten açılmış (' + location.protocol + '). Uygulamayı GitHub adresinden açın.';
+      else msg += '\nChrome menüsü → Ayarlar → Site ayarları → Kamera bölümünden izni kontrol edin.';
       $('err').textContent = msg;
     }
   });
 
-  // Çevrimdışı çalışma için servis çalışanı (yalnızca https/localhost). Kendi dosyalarını önbelleğe alır, başka hiçbir şey yapmaz.
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { if (!recorder) stopStream(); }
-    else if ($('start').style.display === 'none') openCamera().catch(() => {});
+    if (document.hidden) { if (!recorder) stopStream(); voiceOff(); }
+    else if (started()) { openCamera().then(() => { if (mode === 'scan') startScan(); }).catch(() => {}); if (S.voice) voiceOn(); }
   });
+
+  if (/[?&]test\b/.test(location.search)) window.__kameraTest = { detectDoc, warpQuad, makePdf, buildExif, withExif, filt, toGray, mk, S, M, orderQuad, lapVar };
 })();
 </script>
 </body>
