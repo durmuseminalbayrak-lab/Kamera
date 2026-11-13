@@ -18,9 +18,12 @@ Telefonu gece başucunda bir sonara çeviren kişisel uyku takip uygulaması.
 - Sonar ve ivmeölçer nefesi göremezken düzenli horlama varsa nefes hızı horlamaların aralığından
   alınır (horlayanda her nefeste bir horlama). Odada başka horlayan biri varsa bu onun ritmi olabilir.
 - Nefesin ölçülemediği ama hareketin olmadığı süre "uyku, evre ölçülemedi" sayılır; horlama = uyku.
-  Son nefes/horlama kanıtından sonra tekrarlayan uyanıklık varsa (kayıt sonuna ≤60 dk) sabah uyanışı sayılır.
 - Rapor ekranından gece CSV olarak dışa aktarılabilir (ses yok, yalnız ölçüm sayıları; saniyelik tanı kaydı:
   nefes hızı ve kaynağı, sinyal düzeyleri, hareket, saat kayması, horlama ritmi).
+- Gece kesilmesin diye: ses sunucusu yeniden başlarsa mikrofon ve hoparlör yeniden açılır, çözümlemedeki bir hata
+  kaydı durdurmaz (sonar sıfırlanır). Kaydın neden bittiği, pil düzeyi (10 dk'da bir), ses saatinin duvar saatinden
+  sapması ve kurtarılan hatalar kayda işlenir; çökme olursa telefonda `hata.txt` günlüğüne yazılır ve CSV başlığına eklenir.
+  Kayıt kendiliğinden durduysa ana ekran ve rapor bunu söyler; Xiaomi'de gerekli pil ayarlarını gösterir.
 - Ses kaydedilmez; yalnızca 30 sn'lik özetler telefonun içinde saklanır. Uygulamanın internet izni yoktur.
 - Sabah rapor: uyku süresi, verim, uykuya dalma süresi, uyanmalar, tahmini evreler (derin/hafif/REM),
   nefes hızı grafiği, duraklamalar, hareket/horlama/gürültü.
@@ -35,5 +38,6 @@ Kaynak: `app/src/main/java/com/durmuseminalbayrak/uyku/`
 - `NightRecorder.java`, `Night.java` – 30 sn'lik dönemler ve kayıt dosyası
 - `SleepAnalyzer.java` – uyku/uyanıklık ve tahmini evreler
 - `SleepService.java` – gece boyunca çalışan servis (hoparlör döngüsü + mikrofon)
+- `Diag.java` – hata günlüğü (yalnız telefonda)
 - `Exporter.java` – CSV dışa aktarma
 - `MainActivity.java`, `ChartView.java`, `WaveView.java`, `DiagView.java` – arayüz

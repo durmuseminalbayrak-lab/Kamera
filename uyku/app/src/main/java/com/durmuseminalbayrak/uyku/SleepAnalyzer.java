@@ -80,18 +80,6 @@ public final class SleepAnalyzer {
             for (int k = i; k < j; k++) st[k] = fill;
             i = j;
         }
-        // 2b) sabah uyanışı: son uyku kanıtından (nefes ya da horlama) sonra tekrarlayan uyanıklık (≥2 uyanık dönem)
-        //     varsa ve kayıt ilk uyanıktan sonra en çok 60 dk sürdüyse, oradan sonrası uyanıktır
-        //     (uyanıp yatakta kıpırtısız yatma). Daha uzun kuyruk sonarın kişiyi kaybetmesi olabilir: uyku kalır.
-        int lastSeen = -1;
-        for (int i = E - 1; i >= 0; i--) if (breath[i] || snore[i]) { lastSeen = i; break; }
-        if (lastSeen >= 0) {
-            int k = lastSeen + 1;
-            while (k < E && st[k] != WAKE) k++;
-            int wk = 0;
-            for (int i = k; i < E; i++) if (st[i] == WAKE) wk++;
-            if (k < E && E - k <= 120 && wk >= 2) for (int i = k; i < E; i++) st[i] = WAKE;
-        }
         // 3) uyanıklarla çevrili kısa (<3 dk) uyku parçaları uyanıklıktır
         for (int i = 0; i < E; ) {
             if (!asleep(st[i])) { i++; continue; }

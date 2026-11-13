@@ -37,6 +37,12 @@ public final class Night {
 
     public static final class Event {
         public static final int PAUSE = 1, MOVE = 2, NOISE = 3;
+        /** Tanı olayları (çözümlemeye girmez): kaydın bitişi, pil, saat farkı, kurtarılan hata. */
+        public static final int STOP = 4, BATTERY = 5, CLOCK = 6, FAULT = 7;
+        /** STOP değeri: kaydı ne bitirdi. */
+        public static final int BY_USER = 1, BY_MIC = 2, BY_SYSTEM = 3, BY_CRASH = 4;
+        /** FAULT değeri: işleme hatası (sonar sıfırlandı), mikrofon yeniden açıldı, hoparlör yeniden açıldı. */
+        public static final int F_PROCESS = 1, F_MIC = 2, F_SPEAKER = 3;
         public int type;
         public float t, dur, val;
 
@@ -204,6 +210,7 @@ public final class Night {
                         v.dur = in.readFloat();
                         v.val = in.readFloat();
                         n.events.add(v);
+                        if (v.type == Event.STOP) n.stopReason = (int) v.val;
                     } else if (tag == 'S') {
                         if (!withSecs) {
                             in.readFully(SKIP, 0, ver >= 3 ? Sec.BYTES3 : Sec.BYTES2);
@@ -246,10 +253,25 @@ public final class Night {
             }
         }
         if (n.endMillis == 0) n.endMillis = n.startMillis + (long) (n.epochs.size() * EPOCH_SEC * 1000);
+        if (!n.complete) n.lastWrite = f.lastModified();
         return n;
     }
 
     public int version, secCount;
+    /** Son STOP olayının değeri (yoksa 0); kayıt yarıda kaldıysa dosyanın son yazılma zamanı. */
+    public int stopReason;
+    public long lastWrite;
+
+    /** Kaydın neden bittiğinin kısa açıklaması; kullanıcı bitirdiyse null. */
+    public String stopProblem() {
+        if (!complete) return "telefon uygulamayı kapattı ya da uygulama çöktü";
+        switch (stopReason) {
+            case Event.BY_MIC: return "mikrofon okunamadı";
+            case Event.BY_SYSTEM: return "telefon uygulamayı durdurdu";
+            case Event.BY_CRASH: return "uygulama hatası";
+            default: return null;
+        }
+    }
     private static final byte[] SKIP = new byte[64];
 
     private static float uq(int v) { return v == 255 ? Float.NaN : v / 100f; }

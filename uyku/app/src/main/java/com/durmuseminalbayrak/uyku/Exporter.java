@@ -37,12 +37,23 @@ public final class Exporter {
     }
 
     public static void write(Night n, SleepAnalyzer.Report r, OutputStream os) throws IOException {
+        write(n, r, os, null);
+    }
+
+    /** log: varsa hata günlüğünden bu geceye ait satırlar ("# " ile başlığa eklenir). */
+    public static void write(Night n, SleepAnalyzer.Report r, OutputStream os, String log) throws IOException {
         BufferedWriter w = new BufferedWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8), 1 << 16);
         SimpleDateFormat hms = new SimpleDateFormat("HH:mm:ss", Locale.US);
         w.write("# Uyku disa aktarma; baslangic " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(n.startMillis))
                 + "; dosya surumu " + n.version + "; " + (n.secs.isEmpty() ? "donem basina satir (30 sn)" : "saniye basina satir") + "\n");
         w.write(String.format(Locale.US, "# ozet: uyku_dk=%.0f verim=%.0f dalma_dk=%.0f uyanma=%d duraklama=%d horlama_dk=%.0f kapsam=%.2f\n",
                 r.tstMin, r.effPct, r.solMin, r.awakenings, r.pauseCount, r.snoreMin, r.coverage));
+        SimpleDateFormat hm = new SimpleDateFormat("HH:mm:ss", Locale.US);
+        w.write("# kayit: " + hm.format(new Date(n.startMillis)) + " -> " + hm.format(new Date(n.endMillis))
+                + "; tamamlandi=" + (n.complete ? "evet" : "hayir") + "; durma=" + stopName(n.complete ? n.stopReason : -1)
+                + (n.lastWrite > 0 ? "; son_yazma=" + hm.format(new Date(n.lastWrite)) : "") + "\n");
+        if (log != null && !log.isEmpty())
+            for (String l : log.split("\n")) if (!l.trim().isEmpty()) w.write("# hata: " + l.replace(',', ';') + "\n");
         if (!n.secs.isEmpty()) {
             w.write("saat,t_sn,nefes_hizi,kaynak,kalite,sonar_q,ivme_q,hareket,duraklama,sonar_gecerli,ivme_gecerli,sifirlama,"
                     + "yanki_db,taban_db,ultrason_snr_db,bant_disi_gurultu_db,dogrudan_db,sonar_hareket,ivme_hareket,genlik_orani,"
@@ -92,7 +103,32 @@ public final class Exporter {
             case Night.Event.PAUSE: return String.format(Locale.US, "duraklama %.0fs (derinlik %.2f)", v.dur, v.val);
             case Night.Event.MOVE: return String.format(Locale.US, "hareket %.0fs (siddet %.0f)", v.dur, v.val);
             case Night.Event.NOISE: return String.format(Locale.US, "gurultu %.0fdB", v.val);
+            case Night.Event.STOP: return "kayit durdu (" + stopName((int) v.val) + ")";
+            case Night.Event.BATTERY: return String.format(Locale.US, "pil %%%.0f%s%s", v.val,
+                    ((int) v.dur & 1) != 0 ? " sarjda" : "", ((int) v.dur & 2) != 0 ? " tasarruf_modu" : "");
+            case Night.Event.CLOCK: return String.format(Locale.US, "saat farki %+.1fs", v.val);
+            case Night.Event.FAULT: return "kurtarilan hata (" + faultName((int) v.val) + ")";
             default: return "olay" + v.type;
+        }
+    }
+
+    private static String stopName(int k) {
+        switch (k) {
+            case -1: return "beklenmedik (uygulama kapatildi ya da coktu)";
+            case Night.Event.BY_USER: return "kullanici";
+            case Night.Event.BY_MIC: return "mikrofon okunamadi";
+            case Night.Event.BY_SYSTEM: return "sistem durdurdu";
+            case Night.Event.BY_CRASH: return "uygulama hatasi";
+            default: return "bilinmiyor";
+        }
+    }
+
+    private static String faultName(int k) {
+        switch (k) {
+            case Night.Event.F_PROCESS: return "isleme";
+            case Night.Event.F_MIC: return "mikrofon yeniden acildi";
+            case Night.Event.F_SPEAKER: return "hoparlor yeniden acildi";
+            default: return String.valueOf(k);
         }
     }
 }

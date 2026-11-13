@@ -20,6 +20,7 @@ import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -80,8 +81,16 @@ public final class SleepService extends Service {
     private boolean unprocessed;
     private AudioDeviceInfo micDevice;
 
-    private AudioTrack track;
-    private AudioRecord mic;
+    private volatile AudioTrack track;
+    private volatile AudioRecord mic;
+    private int micSrc = -1;
+    /** Kaydı ne bitirdi (Night.Event.BY_*); 0 = henüz bilinmiyor. */
+    private volatile int stopReason;
+    private long elapsedStart;
+    private double lastClockDiff;
+    private volatile long rampStart;
+    private int faults;
+    private long lastFaultEv = -1_000_000;
     private Thread reader, worker;
     private volatile boolean stopFlag, discFlag;
     private boolean stopping, autoStop;
@@ -102,9 +111,28 @@ public final class SleepService extends Service {
     public IBinder onBind(Intent intent) { return null; }
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        Diag.install(getFilesDir());
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        Diag.log("uygulama son kullanılanlardan kaldırıldı (kayıt sürüyordu: " + (running != null) + ")", null);
+        super.onTaskRemoved(rootIntent);
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        if (level >= TRIM_MEMORY_RUNNING_CRITICAL) Diag.log("bellek uyarısı " + level, null);
+        super.onTrimMemory(level);
+    }
+
+    @Override
     public int onStartCommand(Intent it, int flags, int startId) {
         String a = it != null ? it.getAction() : null;
         if (ACT_STOP.equals(a)) {
+            if (stopReason == 0) stopReason = Night.Event.BY_USER;
             new Thread(() -> {
                 stopAll();
                 stopSelf();
@@ -150,27 +178,10 @@ public final class SleepService extends Service {
         float[] w = Sonar.waveform();
         period = new short[Sonar.N];
         for (int i = 0; i < Sonar.N; i++) period[i] = (short) Math.round(w[i] * 0.7f * 32767);
-        AudioAttributes aa = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
-                .build();
-        AudioFormat of = new AudioFormat.Builder()
-                .setSampleRate(Sonar.FS)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .build();
-        int minOut = AudioTrack.getMinBufferSize(Sonar.FS, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        track = new AudioTrack.Builder()
-                .setAudioAttributes(aa)
-                .setAudioFormat(of)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(Math.max(minOut * 4, Sonar.FS))
-                .build();
-        if (track.getState() != AudioTrack.STATE_INITIALIZED) throw new IOException("hoparlör açılamadı");
-        AudioDeviceInfo spk = find(am, AudioManager.GET_DEVICES_OUTPUTS, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER);
-        if (spk != null) track.setPreferredDevice(spk);
-        track.setVolume(0f);
-        track.play();
+        AudioTrack t = makeTrack(am);
+        t.setVolume(0f);
+        t.play();
+        track = t;
         speaker = new Thread(this::speakLoop, "uyku-hoparlor");
         speaker.start();
 
@@ -180,8 +191,21 @@ public final class SleepService extends Service {
         rec = new NightRecorder(new NightRecorder.Out() {
             @Override
             public void epoch(Night.Epoch e) {
-                if (writer != null) {
-                    try { writer.epoch(e); } catch (IOException x) { lastError = "Kayıt yazılamadı: " + x.getMessage(); }
+                Night.Writer w = writer;
+                if (w != null) {
+                    try {
+                        w.epoch(e);
+                        float t = (e.idx + 1) * Night.EPOCH_SEC;
+                        if (e.idx % 20 == 0) w.event(battery(t));
+                        // ses örneklerinin saati duvar saatinden geri kalırsa veri kaybı/donma var demektir
+                        double d = (SystemClock.elapsedRealtime() - elapsedStart) / 1000.0 - t;
+                        if (Math.abs(d - lastClockDiff) > 2) {
+                            lastClockDiff = d;
+                            w.event(new Night.Event(Night.Event.CLOCK, t, 0, d));
+                        }
+                    } catch (IOException x) {
+                        lastError = "Kayıt yazılamadı: " + x.getMessage();
+                    }
                 }
                 updateNotification();
             }
@@ -223,6 +247,107 @@ public final class SleepService extends Service {
         worker.start();
     }
 
+    private AudioTrack makeTrack(AudioManager am) throws IOException {
+        AudioAttributes aa = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                .build();
+        AudioFormat of = new AudioFormat.Builder()
+                .setSampleRate(Sonar.FS)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build();
+        int minOut = AudioTrack.getMinBufferSize(Sonar.FS, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        AudioTrack t = new AudioTrack.Builder()
+                .setAudioAttributes(aa)
+                .setAudioFormat(of)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(Math.max(minOut * 4, Sonar.FS))
+                .build();
+        if (t.getState() != AudioTrack.STATE_INITIALIZED) {
+            t.release();
+            throw new IOException("hoparlör açılamadı");
+        }
+        AudioDeviceInfo spk = find(am, AudioManager.GET_DEVICES_OUTPUTS, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER);
+        if (spk != null) t.setPreferredDevice(spk);
+        return t;
+    }
+
+    /** Ses sunucusu yeniden başlarsa (ör. ERROR_DEAD_OBJECT) hoparlörü yeniden kurar; sesi yavaşça açar. */
+    private boolean reopenTrack() {
+        AudioTrack old = track;
+        track = null;
+        if (old != null) {
+            try { old.pause(); old.flush(); old.stop(); } catch (Exception ignored) { }
+            old.release();
+        }
+        for (int k = 0; k < 3 && !stopFlag; k++) {
+            SystemClock.sleep(1000);
+            if (stopFlag) break;
+            try {
+                AudioTrack t = makeTrack(getSystemService(AudioManager.class));
+                t.setVolume(0f);
+                t.play();
+                rampStart = SystemClock.elapsedRealtime();
+                track = t;
+                return true;
+            } catch (Exception e) {
+                Diag.log("hoparlör yeniden açılamadı", e);
+            }
+        }
+        return false;
+    }
+
+    /** Mikrofon okunamazsa (ses sunucusu yeniden başladı vb.) aynı kaynağı yeniden açar. */
+    private boolean reopenMic() {
+        AudioRecord old = mic;
+        mic = null;
+        if (old != null) {
+            try { old.stop(); } catch (Exception ignored) { }
+            old.release();
+        }
+        for (int k = 0; k < 3 && !stopFlag; k++) {
+            SystemClock.sleep(1000);
+            if (stopFlag) break;
+            AudioRecord r = openMic(micSrc);
+            if (r == null) continue;
+            try {
+                r.startRecording();
+                if (r.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING && !stopFlag) {
+                    mic = r;
+                    return true;
+                }
+            } catch (Exception e) {
+                Diag.log("mikrofon yeniden açılamadı", e);
+            }
+            r.release();
+        }
+        return false;
+    }
+
+    /** Kurtarılan bir aksaklığı kayda işler (tanı için). */
+    private void fault(int code) {
+        Night.Writer w = writer;
+        NightRecorder r = rec;
+        if (w == null || r == null) return;
+        try {
+            w.event(new Night.Event(Night.Event.FAULT, r.sonar.timeSec(), 0, code));
+        } catch (IOException ignored) {
+        }
+    }
+
+    private Night.Event battery(float t) {
+        int lvl = -1, fl = 0;
+        try {
+            BatteryManager bm = getSystemService(BatteryManager.class);
+            lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+            if (bm.isCharging()) fl |= 1;
+            if (getSystemService(PowerManager.class).isPowerSaveMode()) fl |= 2;
+        } catch (Exception ignored) {
+        }
+        return new Night.Event(Night.Event.BATTERY, t, fl, lvl);
+    }
+
     private static AudioDeviceInfo find(AudioManager am, int flag, int type) {
         for (AudioDeviceInfo d : am.getDevices(flag)) if (d.getType() == type) return d;
         return null;
@@ -262,10 +387,16 @@ public final class SleepService extends Service {
     }
 
     private boolean readBlock(AudioRecord r, short[] buf) {
-        int got = 0;
+        int got = 0, zeros = 0;
         while (got < Sonar.N && !stopFlag) {
             int n = r.read(buf, got, Sonar.N - got);
             if (n < 0) return false;
+            if (n == 0) {
+                if (++zeros > 200) return false;   // ~2 sn hiç veri gelmedi
+                SystemClock.sleep(10);
+                continue;
+            }
+            zeros = 0;
             got += n;
         }
         return got == Sonar.N;
@@ -321,6 +452,7 @@ public final class SleepService extends Service {
         if (best < 0) return null;
         AudioRecord r = openMic(best);
         if (r == null) return null;
+        micSrc = best;
         source = srcName(best) + String.format(Locale.US, " (%.0f dB)", bestSnr);
         weakUltrasound = bestSnr < 20;
         status = null;
@@ -329,19 +461,39 @@ public final class SleepService extends Service {
 
     private void speakLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
-        int lastUnder = 0, k = 0;
+        int lastUnder = 0, k = 0, fails = 0;
+        long failWin = 0;
         while (!stopFlag) {
-            int off = 0;
+            AudioTrack t = track;
+            if (t == null) return;
+            int off = 0, n = 0;
             while (off < period.length && !stopFlag) {
-                int n = track.write(period, off, period.length - off);
-                if (n < 0) {
-                    if (!stopFlag) lastError = "Hoparlöre yazılamadı (" + n + ")";
-                    return;
-                }
+                n = t.write(period, off, period.length - off);
+                if (n < 0) break;
                 off += n;
             }
+            if (n < 0) {
+                if (stopFlag) return;
+                long now = SystemClock.elapsedRealtime();
+                if (now - failWin > 600_000) { failWin = now; fails = 0; }
+                Diag.log("hoparlöre yazılamadı (" + n + ")", null);
+                if (++fails > 5 || !reopenTrack()) {
+                    lastError = "Hoparlöre yazılamadı (" + n + ")";
+                    return;
+                }
+                lastUnder = 0;
+                discAt = SystemClock.elapsedRealtime() + 1200;
+                fault(Night.Event.F_SPEAKER);
+                continue;
+            }
+            long rs = rampStart;
+            if (rs != 0) {   // yeniden kurulan hoparlörün sesini 0,6 sn'de aç (tık sesi olmasın)
+                float g = Math.min(1f, (SystemClock.elapsedRealtime() - rs) / 600f);
+                t.setVolume(volScale * g);
+                if (g >= 1f) rampStart = 0;
+            }
             if (++k % 47 == 0) {
-                int u = track.getUnderrunCount();
+                int u = t.getUnderrunCount();
                 if (u != lastUnder) {
                     lastUnder = u;
                     underruns = u;
@@ -366,6 +518,7 @@ public final class SleepService extends Service {
         }
         mic.startRecording();
         startMs = System.currentTimeMillis();   // kayıt zamanı: mikrofon gerçekten başladığında
+        elapsedStart = SystemClock.elapsedRealtime();
         if (!test) {
             try {
                 String name = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(startMs)) + ".uyku";
@@ -375,15 +528,42 @@ public final class SleepService extends Service {
                 lastError = "Kayıt dosyası açılamadı: " + e.getMessage();
             }
         }
+        if (!test) {
+            Diag.log("kayıt başladı · mikrofon " + source, null);
+            Diag.onCrash = () -> {
+                Night.Writer w = writer;
+                if (w == null) return;
+                try {
+                    NightRecorder r = rec;
+                    w.event(new Night.Event(Night.Event.STOP, r != null ? r.sonar.timeSec() : 0, 0, Night.Event.BY_CRASH));
+                    w.end(System.currentTimeMillis());
+                    w.close();
+                } catch (Exception ignored) {
+                }
+            };
+        }
         micReady = true;
         short[] buf = new short[Sonar.N];
+        int fails = 0;
+        long failWin = 0;
         while (!stopFlag) {
-            if (!readBlock(mic, buf)) {
-                if (!stopFlag) {
-                    lastError = "Mikrofon okunamadı";
-                    new Thread(() -> { stopAll(); stopSelf(); }, "uyku-dur").start();
+            AudioRecord m = mic;
+            if (m == null || !readBlock(m, buf)) {
+                if (stopFlag) break;
+                long now = SystemClock.elapsedRealtime();
+                if (now - failWin > 600_000) { failWin = now; fails = 0; }
+                Diag.log("mikrofon okunamadı, yeniden açılıyor", null);
+                if (++fails > 5 || !reopenMic()) {
+                    if (!stopFlag) {
+                        lastError = "Mikrofon okunamadı";
+                        if (stopReason == 0) stopReason = Night.Event.BY_MIC;
+                        new Thread(() -> { stopAll(); stopSelf(); }, "uyku-dur").start();
+                    }
+                    break;
                 }
-                break;
+                discFlag = true;
+                fault(Night.Event.F_MIC);
+                continue;
             }
             float[] b = pool.poll();
             if (b == null) b = new float[Sonar.N];
@@ -397,9 +577,10 @@ public final class SleepService extends Service {
             if (++blkCount % 47 == 0) {
                 rawPeakDb = (float) (20 * Math.log10(Math.max(1, peakSec) / 32768.0));
                 // mikrofon doyuyorsa (kırpılma) hoparlörü yarıya indir; en fazla 3 kez
-                if (peakSec >= 32600 && clipFixes < 3 && track != null) {
+                AudioTrack tr = track;
+                if (peakSec >= 32600 && clipFixes < 3 && tr != null) {
                     volScale *= 0.5f;
-                    track.setVolume(volScale);
+                    tr.setVolume(volScale);
                     clipFixes++;
                     discAt = SystemClock.elapsedRealtime() + 600;
                 }
@@ -431,7 +612,18 @@ public final class SleepService extends Service {
                 if (da != 0 && SystemClock.elapsedRealtime() >= da) discAt = 0;
                 rec.discontinuity();
             }
-            rec.process(b);
+            try {
+                rec.process(b);
+            } catch (Throwable x) {
+                // çözümlemedeki bir hata geceyi bitirmesin: günlüğe yaz, sonarı sıfırla, devam et
+                if (++faults <= 3) Diag.log("işleme hatası", x);
+                try { rec.discontinuity(); } catch (Throwable ignored) { }
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastFaultEv > 60_000) {
+                    lastFaultEv = now;
+                    fault(Night.Event.F_PROCESS);
+                }
+            }
             pool.offer(b);
             if (test && el > TEST_MAX_MS && !autoStop) {
                 autoStop = true;
@@ -490,30 +682,36 @@ public final class SleepService extends Service {
         } catch (Exception ignored) {
         }
         if (sensorThread != null) sensorThread.quitSafely();
-        if (track != null) {
+        AudioTrack t0 = track;
+        if (t0 != null) {
             try {
                 float v0 = volScale;
                 for (int i = 8; i >= 0; i--) {
-                    track.setVolume(v0 * i / 8f);
+                    t0.setVolume(v0 * i / 8f);
                     SystemClock.sleep(40);
                 }
-                track.pause();
-                track.flush();
+                t0.pause();
+                t0.flush();
             } catch (Exception ignored) {
             }
         }
-        if (mic != null) {
-            try { mic.stop(); } catch (Exception ignored) { }
+        AudioRecord m0 = mic;
+        if (m0 != null) {
+            try { m0.stop(); } catch (Exception ignored) { }
         }
         join(speaker);
         join(reader);
         join(worker);
-        if (track != null) {
-            try { track.stop(); } catch (Exception ignored) { }
-            track.release();
-            track = null;
+        AudioTrack t1 = track;
+        track = null;
+        if (t1 != null) {
+            try { t1.stop(); } catch (Exception ignored) { }
+            t1.release();
         }
-        if (mic != null) { mic.release(); mic = null; }
+        AudioRecord m1 = mic;
+        mic = null;
+        if (m1 != null) m1.release();
+        Diag.onCrash = null;
         if (savedVol >= 0) {
             try {
                 getSystemService(AudioManager.class).setStreamVolume(AudioManager.STREAM_MUSIC, savedVol, 0);
@@ -521,11 +719,15 @@ public final class SleepService extends Service {
             }
         }
         if (writer != null) {
+            int why = stopReason == 0 ? Night.Event.BY_SYSTEM : stopReason;
             try {
+                NightRecorder r = rec;
+                writer.event(new Night.Event(Night.Event.STOP, r != null ? r.sonar.timeSec() : 0, 0, why));
                 writer.end(System.currentTimeMillis());
                 writer.close();
             } catch (IOException ignored) {
             }
+            if (!test) Diag.log("kayıt bitti · neden " + why + (lastError != null ? " · " + lastError : ""), null);
             writer = null;
             if (rec != null && rec.epochs < 2 && file != null) file.delete();   // 1 dk'dan kısa kayıt tutulmaz
             else lastFile = file;
@@ -542,6 +744,7 @@ public final class SleepService extends Service {
 
     @Override
     public void onDestroy() {
+        if (stopReason == 0) stopReason = Night.Event.BY_SYSTEM;
         stopAll();
         super.onDestroy();
     }

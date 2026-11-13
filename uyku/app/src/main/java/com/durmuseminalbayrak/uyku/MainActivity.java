@@ -70,6 +70,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Diag.install(getFilesDir());
         sp = getSharedPreferences("uyku", MODE_PRIVATE);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
@@ -141,7 +142,46 @@ public final class MainActivity extends Activity {
         return pm.isIgnoringBatteryOptimizations(getPackageName());
     }
 
+    static boolean isXiaomi() {
+        String m = (Build.MANUFACTURER + " " + Build.BRAND).toLowerCase(Locale.ROOT);
+        return m.contains("xiaomi") || m.contains("redmi") || m.contains("poco");
+    }
+
+    private static final String XIAOMI_STEPS = "Xiaomi (MIUI/HyperOS) arka plandaki uygulamaları, bildirim gösterseler bile gece kapatabiliyor. "
+            + "Bir kez şunları yap:\n\n"
+            + "1) Açılan uygulama bilgisi ekranında \"Pil tasarrufu\" → \"Kısıtlama yok\".\n"
+            + "2) Aynı ekranda \"Otomatik başlatma\"yı aç.\n"
+            + "3) Takibi başlattıktan sonra son uygulamalar ekranında Uyku'nun kartına basılı tut → kilit simgesi. "
+            + "Uyku'yu oradan kaydırıp kapatma.\n"
+            + "4) Gece pil tasarrufu modu açılmasın: telefon şarjda olsun.";
+
+    private void openAppSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            toast("Ayarlar açılamadı");
+        }
+    }
+
+    private void xiaomiDialog(Runnable after) {
+        new AlertDialog.Builder(this)
+                .setTitle("Gece kapatılmasın (Xiaomi)")
+                .setMessage(XIAOMI_STEPS)
+                .setPositiveButton("Ayarları aç", (d, w) -> {
+                    afterBattery = after;
+                    openAppSettings();
+                })
+                .setNegativeButton(after != null ? "Başlat" : "Kapat", (d, w) -> { if (after != null) after.run(); })
+                .show();
+    }
+
     private void batteryThen(Runnable go, boolean test) {
+        if (!test && isXiaomi() && !sp.getBoolean("xiaomiSoruldu", false)) {
+            sp.edit().putBoolean("xiaomiSoruldu", true).apply();
+            Runnable next = () -> batteryThen(go, test);
+            xiaomiDialog(next);
+            return;
+        }
         if (test || batteryFree() || sp.getBoolean("pilSoruldu", false)) {
             go.run();
             return;
@@ -214,6 +254,28 @@ public final class MainActivity extends Activity {
         }
 
         File[] files = nights();
+        if (files.length > 0 && s == null) {
+            String problem = null;
+            long at = 0;
+            try {
+                Night last = Night.read(files[0]);
+                problem = last.stopProblem();
+                at = last.complete ? last.endMillis : last.lastWrite;
+            } catch (IOException ignored) {
+            }
+            if (problem != null) {
+                LinearLayout c = card();
+                c.addView(tv("Son kayıt " + new SimpleDateFormat("HH:mm", TR).format(new Date(at)) + "'de kendiliğinden durdu", 16, WARN, true));
+                c.addView(tv("Neden: " + problem + "." + (isXiaomi()
+                        ? " Xiaomi telefonlar arka plandaki uygulamaları gece kapatabiliyor; aşağıdaki ayarları bir kez yap."
+                        : " Pil kısıtlamasını kaldırmak çoğu zaman çözer."), 13, SUB, false));
+                if (isXiaomi()) c.addView(button("Xiaomi ayarlarını göster", CARD2, TXT, v -> xiaomiDialog(null)), lp(-1, dp(48), 0, dp(10), 0, 0));
+                else c.addView(button("Pil ayarını aç", CARD2, TXT, v -> openBatterySettings()), lp(-1, dp(48), 0, dp(10), 0, 0));
+                LinearLayout.LayoutParams l = lp(-1, -2, 0, dp(12), 0, 0);
+                c.setLayoutParams(l);
+                col.addView(c);
+            }
+        }
         if (files.length > 0) {
             col.addView(section("Son gece"));
             col.addView(nightCard(files[0], true));
@@ -240,6 +302,12 @@ public final class MainActivity extends Activity {
         bat.setPadding(0, dp(14), 0, dp(4));
         if (!free) bat.setOnClickListener(v -> openBatterySettings());
         set.addView(bat);
+        if (isXiaomi()) {
+            TextView xi = tv("Xiaomi: gece kapatılmasın — ayarları göster", 15, ACC, false);
+            xi.setPadding(0, dp(12), 0, dp(4));
+            xi.setOnClickListener(v -> xiaomiDialog(null));
+            set.addView(xi);
+        }
         col.addView(set);
 
         col.addView(section("Nasıl kullanılır?"));
@@ -395,7 +463,21 @@ public final class MainActivity extends Activity {
         h.post(tick);
     }
 
+    private boolean tickFailed;
+
     private void liveTick() {
+        try {
+            liveTickInner();
+        } catch (Throwable x) {
+            // canlı ekrandaki bir çizim hatası (aynı süreçteki) gece kaydını düşürmesin
+            if (!tickFailed) Diag.log("canlı ekran hatası", x);
+            tickFailed = true;
+            h.removeCallbacks(tick);
+            if (screen == 1) h.postDelayed(tick, 1000);
+        }
+    }
+
+    private void liveTickInner() {
         if (screen != 1) return;
         SleepService s = SleepService.running;
         if (s == null) {
@@ -510,8 +592,14 @@ public final class MainActivity extends Activity {
         col.addView(back);
         col.addView(tv(nightTitle(n.startMillis), 24, TXT, true));
         SimpleDateFormat hm = new SimpleDateFormat("HH:mm", TR);
-        col.addView(tv(hm.format(new Date(n.startMillis)) + " → " + hm.format(new Date(n.endMillis))
-                + " · kayıt " + dur(r.tibMin) + (n.complete ? "" : " · kayıt yarıda kalmış"), 13, SUB, false));
+        String problem = n.stopProblem();
+        col.addView(tv(hm.format(new Date(n.startMillis)) + " → " + hm.format(new Date(n.complete ? n.endMillis : n.lastWrite))
+                + " · kayıt " + dur(r.tibMin), 13, SUB, false));
+        if (problem != null) {
+            TextView pw = tv("Kayıt kendiliğinden durdu: " + problem + ". Sonrası ölçülmedi.", 13, WARN, false);
+            pw.setPadding(0, dp(4), 0, 0);
+            col.addView(pw);
+        }
 
         if (r.onset < 0) {
             LinearLayout c = card();
@@ -616,7 +704,7 @@ public final class MainActivity extends Activity {
                 if (uri == null) throw new IOException("dosya oluşturulamadı");
                 try (OutputStream os = cr.openOutputStream(uri)) {
                     if (os == null) throw new IOException("dosya açılamadı");
-                    Exporter.write(n, r, os);
+                    Exporter.write(n, r, os, Diag.since(n.startMillis - 60_000, 6000));
                 }
                 cv.clear();
                 cv.put(MediaStore.MediaColumns.IS_PENDING, 0);
