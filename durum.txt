@@ -1,0 +1,1 @@
+durum=success calistirma=6 commit=a7a6053bf937555245657ea1a883200adf6e5a06
