@@ -43,6 +43,45 @@ public final class SoundMeter {
 
     public volatile float levelDb = Float.NaN;
 
+    // horlama ritmi: horlayan kişide her nefeste bir horlama olur → ardışık horlamalar arası süre = nefes süresi
+    private final double[] snT = new double[24];
+    private int snPos, snN;
+
+    /**
+     * Düzenli horlama sürüyorsa son ~45 sn'nin nefes hızı (nefes/dk), yoksa NaN.
+     * Aralıkların ≥%70'i ortancanın ±%20'si içinde olmalı (atlanan tek horlama 2× aralık verir, dışarıda kalır).
+     */
+    public float snoreRate() {
+        int R = snT.length;
+        if (snN < 6) return Float.NaN;
+        double now = blocks * BLK_SEC, last = snT[(snPos - 1 + R) % R];
+        if (now - last > 12) return Float.NaN;   // horlama sürmüyor
+        double[] iv = new double[R];
+        int ni = 0;
+        double prev = Double.NaN;
+        for (int k = snN; k >= 1; k--) {
+            double t = snT[(snPos - k + R) % R];
+            if (now - t > 45) continue;
+            if (prev == prev && t - prev <= 12) iv[ni++] = t - prev;   // daha uzun boşluk: horlama kesilmiş
+            prev = t;
+        }
+        if (ni < 5) return Float.NaN;
+        double[] c = Arrays.copyOf(iv, ni);
+        Arrays.sort(c);
+        double med = c[ni / 2], sum = 0;
+        int nin = 0;
+        for (int i = 0; i < ni; i++) {
+            if (Math.abs(iv[i] - med) > 0.2 * med) continue;
+            sum += iv[i];
+            nin++;
+        }
+        if (nin < 5 || nin < 0.7 * ni) return Float.NaN;
+        if (now - last > 2.2 * med) return Float.NaN;   // iki nefestir horlama yok: kesildi (duraklama da olabilir)
+        float r = (float) (60.0 * nin / sum);
+        // uyurken yetişkin nefesi bu aralıktadır; dışı büyük olasılıkla nefes başına iki ya da yarım horlamadır
+        return r >= 8 && r <= 26 ? r : Float.NaN;
+    }
+
     public SoundMeter(NoiseSink sink) { this.sink = sink; }
 
     private static final double[] HANN = new double[N];
@@ -92,6 +131,12 @@ public final class SoundMeter {
             double dur = (blocks - 6 - evStart) * BLK_SEC;
             double st = evStart * BLK_SEC;
             if (dur >= 0.25 && dur <= 3.5) {
+                // bir nefesin bölünmüş horlaması (1,2 sn içinde başlayan ikinci parça) aynı nefestir
+                if (snN == 0 || st - snT[(snPos - 1 + snT.length) % snT.length] >= 1.2) {
+                    snT[snPos] = st;
+                    snPos = (snPos + 1) % snT.length;
+                    if (snN < snT.length) snN++;
+                }
                 epSnores++;
                 double gap = st - lastSnoreT;
                 if (gap >= 2 && gap <= 10) epSnoresReg++;

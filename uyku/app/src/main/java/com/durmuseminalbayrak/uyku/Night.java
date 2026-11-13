@@ -17,7 +17,7 @@ import java.util.List;
 public final class Night {
     public static final float EPOCH_SEC = 30f;
     static final int MAGIC = 0x55594B55; // "UYKU"
-    static final int VERSION = 2;   // 2: saniyelik tanı kayıtları ('S')
+    static final int VERSION = 3;   // 2: saniyelik tanı kayıtları ('S'); 3: + saat kayması, horlama ritmi
 
     public static final class Epoch {
         public int idx;
@@ -57,8 +57,9 @@ public final class Night {
         public float q, sq, aq;
         public float echoDb = Float.NaN, noiseDb = Float.NaN, snrDb = Float.NaN, outNoiseDb = Float.NaN, directDb = Float.NaN;
         public float sMove, aMove, ratio = Float.NaN, accAmp = Float.NaN, soundDb = Float.NaN;
+        public float drift = Float.NaN, snoreRate = Float.NaN;   // sürüm 3: ppm, nefes/dk (horlama aralıklarından)
         public int distCm = -1;
-        static final int BYTES = 4 + 4 + 1 + 1 + 3 + 2 * 5 + 2 * 2 + 2 + 2 + 4 + 2;
+        static final int BYTES2 = 4 + 4 + 1 + 1 + 3 + 2 * 5 + 2 * 2 + 2 + 2 + 4 + 2, BYTES3 = BYTES2 + 2 + 2;
     }
 
     public long startMillis, endMillis;
@@ -129,6 +130,8 @@ public final class Night {
             out.writeShort(Math.max(-1, Math.min(32767, c.distCm)));
             out.writeFloat(c.accAmp);
             out.writeShort(d10(c.soundDb));
+            out.writeShort(d10(c.drift));
+            out.writeShort(d10(c.snoreRate));
         }
 
         private static int q100(float v) { return v == v ? Math.max(0, Math.min(100, Math.round(v * 100))) : 255; }
@@ -203,7 +206,7 @@ public final class Night {
                         n.events.add(v);
                     } else if (tag == 'S') {
                         if (!withSecs) {
-                            in.readFully(SKIP, 0, Sec.BYTES);
+                            in.readFully(SKIP, 0, ver >= 3 ? Sec.BYTES3 : Sec.BYTES2);
                             n.secCount++;
                             continue;
                         }
@@ -227,6 +230,10 @@ public final class Night {
                         c.distCm = in.readShort();
                         c.accAmp = in.readFloat();
                         c.soundDb = ud(in.readShort());
+                        if (ver >= 3) {
+                            c.drift = ud(in.readShort());
+                            c.snoreRate = ud(in.readShort());
+                        }
                         n.secs.add(c);
                         n.secCount++;
                     } else if (tag == 'Z') {

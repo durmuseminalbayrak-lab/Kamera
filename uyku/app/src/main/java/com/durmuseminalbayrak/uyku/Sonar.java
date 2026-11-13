@@ -76,6 +76,69 @@ public final class Sonar {
     private final double[] ob1r = new double[NB], ob1i = new double[NB], ob2r = new double[NB], ob2i = new double[NB];
     private int nbHist;
 
+    // saat kayması sızıntısı telafisi: kayma varken çizgiler FFT kutularına tam oturmaz, her çizgi
+    // komşu kutulara ~δ/|Δk| oranında sızar. Kayma (ε) döngüden bilinir; X = (I + O)·Y modeli ile
+    // Y ≈ X − O(X − O·X) hesaplanıp sızıntı geri alınır.
+    static final int LL = 30, NLL = 2 * LL + 1;
+    private final double[] oR = new double[NLL * NLL], oI = new double[NLL * NLL];
+    private final double[] lxR = new double[NLL], lxI = new double[NLL], ltR = new double[NLL], ltI = new double[NLL],
+            y1R = new double[NLL], y1I = new double[NLL];
+    private double epsUsed;
+    private boolean leakOn;
+    private long lastLeakBuild = -1_000_000, loopStable;
+
+    /** Normalize Dirichlet çekirdeği: (1/N)·Σ e^{i2πxn/N}. */
+    private static void dirichlet(double x, double[] out) {
+        double ph = Math.PI * x * (N - 1) / N, mag;
+        double sx = Math.sin(Math.PI * x / N);
+        mag = Math.abs(sx) < 1e-12 ? 1.0 : Math.sin(Math.PI * x) / (N * sx);
+        out[0] = mag * Math.cos(ph);
+        out[1] = mag * Math.sin(ph);
+    }
+
+    private void buildLeak(double eps) {
+        double[] a = new double[2], b = new double[2];
+        for (int m = 0; m < NLL; m++) {
+            double km = K0 - LL + m;
+            dirichlet(km * eps, b);                      // çizgi m'nin kendi kutusundaki katsayı
+            double bn = b[0] * b[0] + b[1] * b[1];
+            for (int j = 0; j < NLL; j++) {
+                int e = j * NLL + m;
+                if (j == m || bn < 1e-20) { oR[e] = 0; oI[e] = 0; continue; }
+                double kj = K0 - LL + j;
+                dirichlet(km * (1 + eps) - kj, a);       // çizgi m'nin kutu j'ye sızması
+                oR[e] = (a[0] * b[0] + a[1] * b[1]) / bn; // a / b
+                oI[e] = (a[1] * b[0] - a[0] * b[1]) / bn;
+            }
+        }
+        epsUsed = eps;
+        leakOn = Math.abs(eps) > 0.2e-6;
+    }
+
+    /** re/im içindeki K0±LL kutularından sızıntıyı geri al (iki yinelemeli). */
+    private void unleak() {
+        for (int j = 0; j < NLL; j++) { lxR[j] = re[K0 - LL + j]; lxI[j] = im[K0 - LL + j]; }
+        // t = O·X
+        mulO(lxR, lxI, ltR, ltI);
+        for (int j = 0; j < NLL; j++) { y1R[j] = lxR[j] - ltR[j]; y1I[j] = lxI[j] - ltI[j]; }
+        mulO(y1R, y1I, ltR, ltI);
+        for (int j = 0; j < NLL; j++) { re[K0 - LL + j] = lxR[j] - ltR[j]; im[K0 - LL + j] = lxI[j] - ltI[j]; }
+    }
+
+    private void mulO(double[] xR, double[] xI, double[] outR, double[] outI) {
+        for (int j = 0; j < NLL; j++) {
+            double sr = 0, si = 0;
+            int base = j * NLL;
+            for (int m = 0; m < NLL; m++) {
+                double a = oR[base + m], b = oI[base + m];
+                sr += a * xR[m] - b * xI[m];
+                si += a * xI[m] + b * xR[m];
+            }
+            outR[j] = sr;
+            outI[j] = si;
+        }
+    }
+
     // hizalama ve saat kayması
     private int d0 = -1, warm;
     private final double[] warmP = new double[M];
@@ -101,6 +164,17 @@ public final class Sonar {
     private final float[] mvRing = new float[300];
     private int mvPos, mvCount;
     private long lastMoveEndSlow = Long.MIN_VALUE / 4;
+    private float prevInten;
+
+    /** mvRing'in son k değerinin medyanı. */
+    private float recentMedian(int k) {
+        int n = Math.min(k, mvCount);
+        if (n <= 0) return 0;
+        float[] c = new float[n];
+        for (int i = 0; i < n; i++) c[i] = mvRing[(mvPos - 1 - i + mvRing.length) % mvRing.length];
+        Arrays.sort(c);
+        return c[n / 2];
+    }
     private double lastMoveTime = -1e9;
     private int moveRun;
 
@@ -188,6 +262,11 @@ public final class Sonar {
         return (float) (Math.abs(pVel) / (2 * Math.PI * K0) * 1e6);   // pVel: fc'de blok başına faz
     }
 
+    /** İşaretli kayma (milyonda bir); saniyelik tanı kaydı için. */
+    public float driftSignedPpm() {
+        return (float) (pVel / (2 * Math.PI * K0) * 1e6);
+    }
+
     /** Seçili nefes hücresinin yaklaşık uzaklığı (cm); yoksa -1. */
     public int distanceCm() {
         int b = bestTap, d = d0;
@@ -209,6 +288,7 @@ public final class Sonar {
         pInit = false;
         pSm = 0;
         pVel = 0;
+        loopStable = 0;
         rcount = 0;
         hpFill = 0;
         hpPos = 0;
@@ -287,6 +367,7 @@ public final class Sonar {
         else nz = nzEma > 0 ? nzEma : 1e-10;
         if (nbHist < 2) nbHist++;
         nzEma += (nz - nzEma) * 0.02;
+        if (leakOn) unleak();
         for (int j = 0; j < NL; j++) {
             int k = K0 - L + j;
             double r = re[k], q = im[k];
@@ -344,6 +425,13 @@ public final class Sonar {
                 double inc = LOOP_A * pRes + pVel;
                 pVel += LOOP_B * pRes;
                 pSm += inc;                           // sonraki blokta ölçülen faz bu kadar düşük gelir
+                if (++loopStable > 470 && frames - lastLeakBuild > 47) {   // ≥10 sn oturmuş döngü
+                    double eps = pVel / (2 * Math.PI * K0);
+                    if (Math.abs(eps - epsUsed) > 0.3e-6) {
+                        buildLeak(eps);
+                        lastLeakBuild = frames;
+                    }
+                }
                 taps();
                 // gürültülü bloklar (ör. horlama anı) daha az ağırlık alır
                 double w = 1.0 / nz;
@@ -438,11 +526,18 @@ public final class Sonar {
         boolean mov = false;
         float inten = 0;
         if (slowInSec > 0 && d0 >= 0) {
-            float base = median(mvRing, mvCount);
+            // olağan seviye: son 5 dk ve son 30 sn medyanlarının büyüğü. Dönünce yankı güçlenirse
+            // 30 sn'lik medyan birkaç saniyede yeni nefes seviyesine çıkar; her nefes hareket sayılmaz.
+            float base5 = median(mvRing, mvCount);
+            float base30 = recentMedian(30);
+            float base = Math.max(base5, base30);
             if (mvCount >= 20 && base > 0) {
                 inten = (float) (mvSecMax / base);
-                mov = inten > 6f && mvSecMax > 2 * mvNoiseAtMax;   // değişim gürültünün açıkça üstünde olmalı
+                boolean aboveNoise = mvSecMax > 2 * mvNoiseAtMax;      // değişim gürültünün açıkça üstünde
+                // güçlü değişim hemen; orta şiddette olan art arda 2 sn sürerse hareket (tek nefes sıçraması değil)
+                mov = aboveNoise && (inten > 15f || (inten > 8f && prevInten > 8f));
             }
+            prevInten = inten;
             mvRing[mvPos] = (float) mvSecMax;
             mvPos = (mvPos + 1) % mvRing.length;
             if (mvCount < mvRing.length) mvCount++;
@@ -488,6 +583,7 @@ public final class Sonar {
             lagOf[d] = -1;
             if (near(d)) continue;
             load(d, start, n);
+            lowpass(n);
             double e = 0;
             cum[0] = 0;
             for (int i = 0; i < n; i++) {
@@ -576,6 +672,7 @@ public final class Sonar {
         noiseDb = db10(enoise / (zMag * zMag));
         // gösterim / soluk aralığı için dalga
         load(top[0], start, n);
+        lowpass(n);
         float[] w = shape(n);
         if (lastWave != null) {
             // önceki dalgayla aynı yönde olsun: örtüşen örnekleri karşılaştır
@@ -590,6 +687,41 @@ public final class Sonar {
         lastWave = w;
         lastWaveEnd = slowTotal;
         waveOut = w;
+    }
+
+    // nefes bandı alçak geçiren (31 dokulu Hamming pencereli sinc, 1 Hz): gürültünün ~%83'ünü atar
+    static final int LPN = 31;
+    static final double[] LPK = new double[LPN];
+    static {
+        double fc = 1.0 / SLOW_HZ, sum = 0;
+        for (int k = 0; k < LPN; k++) {
+            int m = k - LPN / 2;
+            double x = m == 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * m) / (Math.PI * m);
+            LPK[k] = x * (0.54 - 0.46 * Math.cos(2 * Math.PI * k / (LPN - 1)));
+            sum += LPK[k];
+        }
+        for (int k = 0; k < LPN; k++) LPK[k] /= sum;
+    }
+    private final double[] lpR = new double[WIN], lpI = new double[WIN];
+
+    /** xr/xi (n örnek) üzerinde sıfır fazlı alçak geçiren; kenarlarda çekirdek kırpılıp normalize edilir. */
+    private void lowpass(int n) {
+        int h = LPN / 2;
+        for (int i = 0; i < n; i++) {
+            double sr = 0, si = 0, ws = 0;
+            int k0 = Math.max(0, h - i), k1 = Math.min(LPN - 1, h + (n - 1 - i));
+            for (int k = k0; k <= k1; k++) {
+                int j = i + k - h;
+                double c = LPK[k];
+                sr += c * xr[j];
+                si += c * xi[j];
+                ws += c;
+            }
+            lpR[i] = sr / ws;
+            lpI[i] = si / ws;
+        }
+        System.arraycopy(lpR, 0, xr, 0, n);
+        System.arraycopy(lpI, 0, xi, 0, n);
     }
 
     private void load(int d, int start, int n) {
@@ -785,6 +917,7 @@ public final class Sonar {
         int b = bestTap;
         if (b >= 0) {
             load(b, start, n);
+            lowpass(n);
             float[] x = new float[n], y = new float[n];
             for (int i = 0; i < n; i++) { x[i] = (float) xr[i]; y[i] = (float) xi[i]; }
             trajX = x;

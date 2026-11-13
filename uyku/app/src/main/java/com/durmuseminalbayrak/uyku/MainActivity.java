@@ -438,15 +438,20 @@ public final class MainActivity extends Activity {
         if (r.moving) { q = "Hareket algılandı — telefon ya da vücut oynuyor"; qc = WARN; }
         else if (r.inPause) { q = "Nefes duraklaması olabilir"; qc = BAD; }
         else if (v) {
-            q = (qv >= 0.7f ? "Sinyal iyi" : "Sinyal orta") + String.format(TR, " (%.2f) · %s", qv,
-                    r.activeSource == 2 ? "hareket sensörü" : "sonar");
-            qc = qv >= 0.7f ? GOOD : WARN;
+            if (r.activeSource == 3) {
+                q = "Nefes horlama ritminden";
+                qc = WARN;
+            } else {
+                q = (qv >= 0.7f ? "Sinyal iyi" : "Sinyal orta") + String.format(TR, " (%.2f) · %s", qv,
+                        r.activeSource == 2 ? "hareket sensörü" : "sonar");
+                qc = qv >= 0.7f ? GOOD : WARN;
+            }
         }
         else if (so.timeSec() < 14) { q = "Nefes aranıyor… (ilk 10–15 sn)"; qc = SUB; }
         else { q = reason(s, r); qc = BAD; }
         lvQual.setText(q);
         lvQual.setTextColor(qc);
-        lvWave.set(r.wave(), v ? ACC : 0xFF4A5577);
+        lvWave.set(r.wave(), v && r.activeSource != 3 ? ACC : 0xFF4A5577);
         if (lvDiagView != null) lvDiagView.set(so);
         float lvl = r.sound.levelDb;
         lvInfo.setText((s.weakUltrasound ? "⚠ Bu mikrofon/hoparlör ultrasonu zayıf iletiyor; ölçüm zor olabilir.\n" : "")

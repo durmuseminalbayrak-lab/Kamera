@@ -10,8 +10,17 @@ Telefonu gece başucunda bir sonara çeviren kişisel uyku takip uygulaması.
 - Test ekranı tanı çizimleri gösterir: alınan spektrum, yankı profili, seçili yankının yörüngesi.
 - Horlama gibi geniş bantlı sesler bant dışı kutulardan ölçülür; gürültülü bloklar daha az ağırlık alır,
   hareket ve nefes genliğinden gürültü payı çıkarılır (horlama hareket sayılmaz).
+- Hoparlör ile mikrofon saatleri arasındaki kayma, ultrason çizgilerini komşu FFT kutularına sızdırır;
+  kayma döngüden bilindiği için bu sızıntı her blokta geri alınır (zayıf yankıda belirgin kazanç).
+  Nefes dalgası analizden önce 1 Hz'lik alçak geçirenden geçirilir.
+- Hareket eşiği son 5 dk ve son 30 sn'lik seviyelere göre uyarlanır: dönünce yankı güçlenirse
+  her nefes hareket sayılmaz.
+- Sonar ve ivmeölçer nefesi göremezken düzenli horlama varsa nefes hızı horlamaların aralığından
+  alınır (horlayanda her nefeste bir horlama). Odada başka horlayan biri varsa bu onun ritmi olabilir.
 - Nefesin ölçülemediği ama hareketin olmadığı süre "uyku, evre ölçülemedi" sayılır; horlama = uyku.
-- Rapor ekranından gece CSV olarak dışa aktarılabilir (ses yok, yalnız ölçüm sayıları; saniyelik tanı kaydı).
+  Son nefes/horlama kanıtından sonra tekrarlayan uyanıklık varsa (kayıt sonuna ≤60 dk) sabah uyanışı sayılır.
+- Rapor ekranından gece CSV olarak dışa aktarılabilir (ses yok, yalnız ölçüm sayıları; saniyelik tanı kaydı:
+  nefes hızı ve kaynağı, sinyal düzeyleri, hareket, saat kayması, horlama ritmi).
 - Ses kaydedilmez; yalnızca 30 sn'lik özetler telefonun içinde saklanır. Uygulamanın internet izni yoktur.
 - Sabah rapor: uyku süresi, verim, uykuya dalma süresi, uyanmalar, tahmini evreler (derin/hafif/REM),
   nefes hızı grafiği, duraklamalar, hareket/horlama/gürültü.

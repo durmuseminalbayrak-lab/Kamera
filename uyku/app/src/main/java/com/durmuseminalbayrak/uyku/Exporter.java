@@ -46,7 +46,7 @@ public final class Exporter {
         if (!n.secs.isEmpty()) {
             w.write("saat,t_sn,nefes_hizi,kaynak,kalite,sonar_q,ivme_q,hareket,duraklama,sonar_gecerli,ivme_gecerli,sifirlama,"
                     + "yanki_db,taban_db,ultrason_snr_db,bant_disi_gurultu_db,dogrudan_db,sonar_hareket,ivme_hareket,genlik_orani,"
-                    + "mesafe_cm,ivme_genlik,ses_db,evre,olay\n");
+                    + "mesafe_cm,ivme_genlik,ses_db,kayma_ppm,horlama_ritmi,evre,olay\n");
             int ev = 0;
             for (Night.Sec c : n.secs) {
                 int ei = (int) (c.t / Night.EPOCH_SEC);
@@ -57,12 +57,12 @@ public final class Exporter {
                     o.append(event(v));
                 }
                 w.write(hms.format(new Date(n.startMillis + (long) (c.t * 1000))) + "," + f(c.t, 1) + "," + f(c.rate, 2) + ","
-                        + (c.src == 1 ? "sonar" : c.src == 2 ? "ivme" : "-") + "," + f(c.q, 2) + "," + f(c.sq, 2) + "," + f(c.aq, 2) + ","
+                        + (c.src == 1 ? "sonar" : c.src == 2 ? "ivme" : c.src == 3 ? "horlama" : "-") + "," + f(c.q, 2) + "," + f(c.sq, 2) + "," + f(c.aq, 2) + ","
                         + (c.flags & 1) + "," + ((c.flags >> 1) & 1) + "," + ((c.flags >> 2) & 1) + "," + ((c.flags >> 3) & 1) + ","
                         + ((c.flags >> 4) & 1) + "," + f(c.echoDb, 1) + "," + f(c.noiseDb, 1) + "," + f(c.snrDb, 1) + ","
                         + f(c.outNoiseDb, 1) + "," + f(c.directDb, 1) + "," + f(c.sMove, 1) + "," + f(c.aMove, 1) + ","
                         + f(c.ratio, 3) + "," + (c.distCm >= 0 ? String.valueOf(c.distCm) : "") + "," + f(c.accAmp, 4) + ","
-                        + f(c.soundDb, 1) + "," + (ei < r.stage.length ? stage(r.stage[ei]) : "") + "," + o + "\n");
+                        + f(c.soundDb, 1) + "," + f(c.drift, 1) + "," + f(c.snoreRate, 1) + "," + (ei < r.stage.length ? stage(r.stage[ei]) : "") + "," + o + "\n");
             }
         } else {
             w.write("saat,donem,nefes_hizi,kalite,gecerli_oran,hareket_sn,hareket_siddeti,genlik_orani,cv,duraklama,duraklama_sn,"

@@ -37,7 +37,7 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
     public volatile float lastEpochRate = Float.NaN;
     public volatile float rate = Float.NaN, quality;
     public volatile boolean valid, moving, inPause;
-    /** 0 = ölçüm yok, 1 = sonar, 2 = ivmeölçer (telefon göğüste/yatakta). */
+    /** 0 = ölçüm yok, 1 = sonar, 2 = ivmeölçer (telefon göğüste/yatakta), 3 = horlama ritmi. */
     public volatile int activeSource;
 
     public NightRecorder(Out out) {
@@ -56,7 +56,7 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
     }
 
     /** Canlı ekranda gösterilecek dalga (o an kullanılan kaynaktan). */
-    public float[] wave() { return activeSource == 2 ? accel.waveOut : sonar.waveOut; }
+    public float[] wave() { return activeSource == 2 ? accel.waveOut : sonar.waveOut; }   // 3: dalga yok, sonarınki soluk çizilir
 
     /** 1024 örneklik mikrofon bloğu. */
     public void process(float[] x) {
@@ -75,9 +75,12 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
         boolean sv = s.valid, av = accel.valid;
         if (sv) lastSonarValidT = t;
         boolean useA = av && (!sv || accel.quality > s.quality + 0.05f);
-        activeSource = useA ? 2 : sv ? 1 : 0;
-        float r = useA ? accel.rate : sv ? s.rate : Float.NaN;
-        boolean v = sv || av;
+        // sonar ve ivme ölçemiyorsa düzenli horlamanın ritmi nefes hızını verir (karşılaştırma için hep kaydedilir)
+        float snr = sound.snoreRate();
+        boolean useS = !sv && !av && snr == snr;
+        activeSource = useA ? 2 : sv ? 1 : useS ? 3 : 0;
+        float r = useA ? accel.rate : sv ? s.rate : useS ? snr : Float.NaN;
+        boolean v = sv || av || useS;
         boolean mv = s.moving || accel.moving;
         float mi = Math.max(s.moveIntensity, accel.moveIntensity);
         rate = r;
@@ -129,6 +132,8 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
         c.distCm = s.distanceCm();
         c.accAmp = accel.ampRms;
         c.soundDb = sound.levelDb;
+        c.drift = s.driftSignedPpm();
+        c.snoreRate = snr;
         out.sec(c);
         if (++secInEpoch >= Night.EPOCH_SEC) closeEpoch();
     }
