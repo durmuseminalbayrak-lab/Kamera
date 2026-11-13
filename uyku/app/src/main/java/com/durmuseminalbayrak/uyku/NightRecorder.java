@@ -8,6 +8,8 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
     public interface Out {
         void epoch(Night.Epoch e);
         void event(Night.Event v);
+        /** Saniyelik tanı kaydı (isteğe bağlı). */
+        default void sec(Night.Sec c) { }
     }
 
     public final Sonar sonar;
@@ -108,6 +110,26 @@ public final class NightRecorder implements Sonar.Listener, SoundMeter.NoiseSink
             totalMoves++;
             out.event(new Night.Event(Night.Event.MOVE, moveStart, t - 1 - moveStart, moveEvMax));
         }
+        Night.Sec c = new Night.Sec();
+        c.t = (float) t;
+        c.rate = r;
+        c.src = activeSource;
+        c.flags = (mv ? 1 : 0) | (inPause ? 2 : 0) | (sv ? 4 : 0) | (av ? 8 : 0) | (s.disturbed ? 16 : 0);
+        c.q = quality;
+        c.sq = s.quality;
+        c.aq = accel.quality;
+        c.echoDb = s.echoDb;
+        c.noiseDb = s.noiseDb;
+        c.snrDb = s.bandSnrDb;
+        c.outNoiseDb = s.outNoiseDb;
+        c.directDb = s.directDb;
+        c.sMove = s.moveIntensity;
+        c.aMove = accel.moveIntensity;
+        c.ratio = s.ratio;
+        c.distCm = s.distanceCm();
+        c.accAmp = accel.ampRms;
+        c.soundDb = sound.levelDb;
+        out.sec(c);
         if (++secInEpoch >= Night.EPOCH_SEC) closeEpoch();
     }
 

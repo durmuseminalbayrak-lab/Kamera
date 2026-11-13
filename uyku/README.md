@@ -8,6 +8,10 @@ Telefonu gece başucunda bir sonara çeviren kişisel uyku takip uygulaması.
 - Telefon göğüste ya da yatakta vücuda yakınsa ivmeölçer de nefesi ve hareketi ölçer; her saniye
   daha iyi olan kaynak kullanılır.
 - Test ekranı tanı çizimleri gösterir: alınan spektrum, yankı profili, seçili yankının yörüngesi.
+- Horlama gibi geniş bantlı sesler bant dışı kutulardan ölçülür; gürültülü bloklar daha az ağırlık alır,
+  hareket ve nefes genliğinden gürültü payı çıkarılır (horlama hareket sayılmaz).
+- Nefesin ölçülemediği ama hareketin olmadığı süre "uyku, evre ölçülemedi" sayılır; horlama = uyku.
+- Rapor ekranından gece CSV olarak dışa aktarılabilir (ses yok, yalnız ölçüm sayıları; saniyelik tanı kaydı).
 - Ses kaydedilmez; yalnızca 30 sn'lik özetler telefonun içinde saklanır. Uygulamanın internet izni yoktur.
 - Sabah rapor: uyku süresi, verim, uykuya dalma süresi, uyanmalar, tahmini evreler (derin/hafif/REM),
   nefes hızı grafiği, duraklamalar, hareket/horlama/gürültü.
@@ -22,4 +26,5 @@ Kaynak: `app/src/main/java/com/durmuseminalbayrak/uyku/`
 - `NightRecorder.java`, `Night.java` – 30 sn'lik dönemler ve kayıt dosyası
 - `SleepAnalyzer.java` – uyku/uyanıklık ve tahmini evreler
 - `SleepService.java` – gece boyunca çalışan servis (hoparlör döngüsü + mikrofon)
+- `Exporter.java` – CSV dışa aktarma
 - `MainActivity.java`, `ChartView.java`, `WaveView.java`, `DiagView.java` – arayüz

@@ -65,6 +65,16 @@ public final class Sonar {
     private final double[] tr = new double[M], ti = new double[M];
     private final double[] ar = new double[M], ai = new double[M];
     private int an;
+    // gürültü: her blokta verici bandının dışındaki kutulardan ölçülür (horlama, hışırtı gibi geniş bantlı sesler)
+    private double tapC;                 // blok gürültüsü → hücre gürültüsü katsayısı (Σ|G|²)
+    private double wSum, slowNoise, nzEma;
+    private final float[] snRing = new float[RING];   // yavaş örnek başına hücre gürültü varyansı
+    private final float[] hpN = new float[PW];
+    private double hpNSum;
+    private double mvNoiseAtMax;
+    static final int NB_NEAR = 12, NB_FAR = 12 + 28, NB = 2 * 29;   // her yanda 29 kutu, banttan ≥12 kutu uzakta
+    private final double[] ob1r = new double[NB], ob1i = new double[NB], ob2r = new double[NB], ob2i = new double[NB];
+    private int nbHist;
 
     // hizalama ve saat kayması
     private int d0 = -1, warm;
@@ -116,7 +126,7 @@ public final class Sonar {
     public volatile float rate = Float.NaN, quality, ratio = Float.NaN, moveIntensity;
     public volatile boolean moving, valid, disturbed, inPause;
     public volatile int bestTap = -1, resets;
-    public volatile float directDb = Float.NaN, echoDb = Float.NaN, noiseDb = Float.NaN, bandSnrDb = Float.NaN;
+    public volatile float directDb = Float.NaN, echoDb = Float.NaN, noiseDb = Float.NaN, bandSnrDb = Float.NaN, outNoiseDb = Float.NaN;
     /** Son 30 sn'lik nefes dalgası (birim RMS); arayüz kopyalar. */
     public volatile float[] waveOut;
     public volatile float lagSec = Float.NaN;
@@ -145,6 +155,7 @@ public final class Sonar {
             double g = win[j] / (s2 + eps) / wsum;
             gr[j] = sr * g;
             gi[j] = -si * g;
+            tapC += gr[j] * gr[j] + gi[j] * gi[j];
             fk[j] = (double) k / K0;
             for (int d = 0; d < M; d++) {
                 double a = 2 * Math.PI * (j - L) * d / M;
@@ -203,9 +214,12 @@ public final class Sonar {
         hpPos = 0;
         pvOk = false;
         an = 0;
+        wSum = 0;
         Arrays.fill(ar, 0);
         Arrays.fill(ai, 0);
         for (float[] a : hp2) Arrays.fill(a, 0);
+        Arrays.fill(hpN, 0);
+        hpNSum = 0;
         Arrays.fill(hpSum, 0);
         pd.reset();
         inPause = false;
@@ -254,6 +268,25 @@ public final class Sonar {
             double pw = (re[k] * re[k] + im[k] * im[k]) / ((N / 2.0) * (N / 2.0));
             specAcc[k - SPEC_LO] += (pw - specAcc[k - SPEC_LO]) * 0.1;
         }
+        // rastgele gürültü: bant dışı kutuların bloktan bloğa ikinci farkı. Saat kaymasıyla oluşan yavaş
+        // dönen sızıntıyı ve sabit bozulma ürünlerini yok sayar, yalnız gerçekten değişen sesi ölçer.
+        double nz = 0;
+        for (int i = 0; i < NB; i++) {
+            int k = i < NB / 2 ? K0 - L - NB_FAR + i : K0 + L + NB_NEAR + (i - NB / 2);
+            double xr0 = re[k], xi0 = im[k];
+            if (nbHist >= 2) {
+                double dr = xr0 - 2 * ob1r[i] + ob2r[i], di = xi0 - 2 * ob1i[i] + ob2i[i];
+                nz += dr * dr + di * di;
+            }
+            ob2r[i] = ob1r[i];
+            ob2i[i] = ob1i[i];
+            ob1r[i] = xr0;
+            ob1i[i] = xi0;
+        }
+        if (nbHist >= 2) nz = Math.max(nz / (6.0 * NB), 1e-14);
+        else nz = nzEma > 0 ? nzEma : 1e-10;
+        if (nbHist < 2) nbHist++;
+        nzEma += (nz - nzEma) * 0.02;
         for (int j = 0; j < NL; j++) {
             int k = K0 - L + j;
             double r = re[k], q = im[k];
@@ -312,13 +345,18 @@ public final class Sonar {
                 pVel += LOOP_B * pRes;
                 pSm += inc;                           // sonraki blokta ölçülen faz bu kadar düşük gelir
                 taps();
-                for (int d = 0; d < M; d++) { ar[d] += tr[d]; ai[d] += ti[d]; }
+                // gürültülü bloklar (ör. horlama anı) daha az ağırlık alır
+                double w = 1.0 / nz;
+                for (int d = 0; d < M; d++) { ar[d] += w * tr[d]; ai[d] += w * ti[d]; }
+                wSum += w;
                 if (++an == DEC) {
-                    for (int d = 0; d < M; d++) { ar[d] /= DEC; ai[d] /= DEC; }
+                    for (int d = 0; d < M; d++) { ar[d] /= wSum; ai[d] /= wSum; }
+                    slowNoise = tapC / wSum;
                     slow();
                     Arrays.fill(ar, 0);
                     Arrays.fill(ai, 0);
                     an = 0;
+                    wSum = 0;
                 }
             }
         }
@@ -351,12 +389,20 @@ public final class Sonar {
         slowTotal++;
         if (pvOk) {
             double mv = 0;
+            int nt = 0;
             for (int d = 0; d < M; d++) {
                 if (near(d)) continue;
                 double a = ar[d] - pvR[d], b = ai[d] - pvI[d];
                 mv += a * a + b * b;
+                nt++;
             }
-            if (mv > mvSecMax) mvSecMax = mv;
+            // beklenen gürültü katkısını çıkar: geniş bantlı ses (horlama) hareket sayılmasın
+            double noise = nt * (slowNoise + snRing[(rpos - 1 + RING) % RING]);
+            double ex = Math.max(0, mv - noise);
+            if (ex > mvSecMax) {
+                mvSecMax = ex;
+                mvNoiseAtMax = noise;
+            }
             slowInSec++;
         }
         System.arraycopy(ar, 0, pvR, 0, M);
@@ -366,6 +412,7 @@ public final class Sonar {
             rr[d][rpos] = (float) ar[d];
             ri[d][rpos] = (float) ai[d];
         }
+        snRing[rpos] = (float) slowNoise;
         rpos = (rpos + 1) % RING;
         rcount++;
         // 1 sn arayla fark gücü: nefes sürerken yüksek, durunca hemen sıfıra iner (genlik/duraklama)
@@ -377,6 +424,9 @@ public final class Sonar {
                 hpSum[d] += p - hp2[d][hpPos];
                 hp2[d][hpPos] = p;
             }
+            float pn = (float) (slowNoise + snRing[q]);    // farkın gürültü payı (tüm hücrelerde aynı)
+            hpNSum += pn - hpN[hpPos];
+            hpN[hpPos] = pn;
             hpPos = (hpPos + 1) % PW;
             if (hpFill < PW) hpFill++;
         }
@@ -391,7 +441,7 @@ public final class Sonar {
             float base = median(mvRing, mvCount);
             if (mvCount >= 20 && base > 0) {
                 inten = (float) (mvSecMax / base);
-                mov = inten > 6f;
+                mov = inten > 6f && mvSecMax > 2 * mvNoiseAtMax;   // değişim gürültünün açıkça üstünde olmalı
             }
             mvRing[mvPos] = (float) mvSecMax;
             mvPos = (mvPos + 1) % mvRing.length;
@@ -406,6 +456,7 @@ public final class Sonar {
             if (moveRun >= 2 || inten > 25) pd.resetRef();   // pozisyon değişti: genlik referansı yeniden
         } else moveRun = 0;
         mvSecMax = 0;
+        mvNoiseAtMax = 0;
         slowInSec = 0;
 
         analyze();
@@ -691,14 +742,17 @@ public final class Sonar {
     }
 
     private void amplitudeAndPause(double t) {
+        double nsum = 0;
+        for (float v : hpN) nsum += v;
+        hpNSum = nsum;   // kayan toplamların yuvarlama birikimini temizle
         double num = 0, den = 0;
         for (int d = 0; d < M; d++) {
             if (wgt[d] <= 0) continue;
             double s = 0;
             float[] h = hp2[d];
             for (float v : h) s += v;
-            hpSum[d] = s;   // kayan toplamın yuvarlama birikimini temizle
-            num += wgt[d] * s / PW;
+            hpSum[d] = s;
+            num += wgt[d] * Math.max(0, s - nsum) / PW;   // gürültü payı çıkarılmış hareket gücü
             den += wgt[d];
         }
         float A = den > 0 && hpFill >= PW ? (float) Math.sqrt(num / den) : Float.NaN;
@@ -743,6 +797,7 @@ public final class Sonar {
 
     private void diagnostics() {
         directDb = d0 >= 0 && zMag > 0 ? (float) (20 * Math.log10(zMag)) : Float.NaN;
+        outNoiseDb = nzEma > 0 ? (float) (10 * Math.log10(nzEma / ((N / 2.0) * (N / 2.0)))) : Float.NaN;
         double in = 0, out = 0;
         int no = 0;
         for (int j = 0; j < NL; j++) { int k = K0 - L + j; in += re[k] * re[k] + im[k] * im[k]; }

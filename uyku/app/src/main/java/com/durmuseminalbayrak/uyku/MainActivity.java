@@ -3,6 +3,9 @@ package com.durmuseminalbayrak.uyku;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,9 +15,11 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -31,6 +36,7 @@ import android.widget.Toast;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -529,6 +535,10 @@ public final class MainActivity extends Activity {
         lg.append("\n");
         legend(lg, "REM", r.remMin, tot, ChartView.C_REM);
         legend(lg, "Uyanık", r.wakeMin, -1, ChartView.C_WAKE);
+        if (r.unkMin > 0) {
+            lg.append("\n");
+            legend(lg, "Uyku, evre ölçülemedi", r.unkMin, tot, ChartView.C_UNK);
+        }
         if (r.nodataMin > 0) legend(lg, "Ölçüm yok", r.nodataMin, -1, ChartView.C_NO);
         TextView lgv = tv("", 13, SUB, false);
         lgv.setText(lg);
@@ -574,9 +584,54 @@ public final class MainActivity extends Activity {
         c5.setLayoutParams(lp(-1, -2, 0, dp(14), 0, 0));
         col.addView(c5);
 
+        TextView exp = button("Veriyi dışa aktar (CSV)", CARD2, TXT, v -> export(f));
+        col.addView(exp, lp(-1, dp(52), 0, dp(18), 0, 0));
+        TextView expNote = tv("Ses içermez, yalnız ölçüm sayıları. İndirilenler/Uyku klasörüne kaydedilir ve paylaşılabilir.", 12, SUB, false);
+        expNote.setPadding(dp(4), dp(6), dp(4), 0);
+        col.addView(expNote);
         TextView del = button("Bu geceyi sil", CARD, BAD, v -> confirmDelete(f));
         col.addView(del, lp(-1, dp(50), 0, dp(18), 0, 0));
         root.addView(sv);
+    }
+
+    private void export(File f) {
+        toast("Hazırlanıyor…");
+        new Thread(() -> {
+            try {
+                Night n = Night.read(f, true);
+                SleepAnalyzer.Report r = SleepAnalyzer.analyze(n);
+                String name = Exporter.fileName(n);
+                ContentResolver cr = getContentResolver();
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/csv");
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Uyku");
+                cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) throw new IOException("dosya oluşturulamadı");
+                try (OutputStream os = cr.openOutputStream(uri)) {
+                    if (os == null) throw new IOException("dosya açılamadı");
+                    Exporter.write(n, r, os);
+                }
+                cv.clear();
+                cv.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                cr.update(uri, cv, null, null);
+                runOnUiThread(() -> {
+                    toast("İndirilenler/Uyku/" + name + " kaydedildi");
+                    Intent send = new Intent(Intent.ACTION_SEND)
+                            .setType("text/csv")
+                            .putExtra(Intent.EXTRA_STREAM, uri)
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    send.setClipData(ClipData.newRawUri(name, uri));
+                    try {
+                        startActivity(Intent.createChooser(send, "Gece verisini paylaş"));
+                    } catch (Exception ignored) {
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> toast("Dışa aktarılamadı: " + e.getMessage()));
+            }
+        }, "uyku-disa-aktar").start();
     }
 
     private static void legend(SpannableStringBuilder sb, String name, float min, float tot, int col) {

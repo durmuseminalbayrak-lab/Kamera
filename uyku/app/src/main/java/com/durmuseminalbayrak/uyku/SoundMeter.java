@@ -84,7 +84,7 @@ public final class SoundMeter {
         if (floorLo != floorLo) return;
 
         // --- horlama: alçak bant baskın ve tabanın ≥10 dB üstünde, 0,25–3,5 sn süren olay ---
-        boolean on = dLo > floorLo + 10 && lo >= 0.5 * br;
+        boolean on = dLo > floorLo + 10 && lo >= 0.35 * br;
         if (on) { act++; inact = 0; } else { inact++; act = 0; }
         if (!inEv && act >= 3) { inEv = true; evStart = blocks - 3; }
         if (inEv && inact >= 6) {
@@ -111,7 +111,8 @@ public final class SoundMeter {
             if (inNoise) {
                 inNoise = false;
                 double dur = t - nStart;
-                boolean snoreLike = nLo >= 0.5 * nBr && dur <= 3.5;
+                // horlama ve horlama dizisinin içindeki yüksek sesler gürültü sayılmaz
+                boolean snoreLike = dur <= 4 && (nLo >= 0.35 * nBr || nStart - lastSnoreT < 8);
                 if (!snoreLike) {
                     epNoises++;
                     if (sink != null) sink.noise(nStart, noisePeak);

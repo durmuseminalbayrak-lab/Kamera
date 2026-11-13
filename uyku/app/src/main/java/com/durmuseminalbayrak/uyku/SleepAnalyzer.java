@@ -12,6 +12,8 @@ import java.util.List;
  */
 public final class SleepAnalyzer {
     public static final int NODATA = 0, WAKE = 1, REM = 2, LIGHT = 3, DEEP = 4;
+    /** Uyku ama evresi ölçülemedi: nefes görülemedi, hareket de yoktu (ya da horlama vardı). */
+    public static final int UNK = 5;
     static final float EP_MIN = Night.EPOCH_SEC / 60f;
 
     public static final class Report {
@@ -19,7 +21,7 @@ public final class SleepAnalyzer {
         public int onset = -1, last = -1;
         public float tibMin, tstMin, solMin, wasoMin, effPct, nodataMin;
         public int awakenings;
-        public float wakeMin, remMin, lightMin, deepMin;
+        public float wakeMin, remMin, lightMin, deepMin, unkMin;
         public float rateMed = Float.NaN, rateLo = Float.NaN, rateHi = Float.NaN;
         public int pauseCount;
         public float pauseIndex, pauseLongest;
@@ -36,14 +38,17 @@ public final class SleepAnalyzer {
         r.tibMin = E * EP_MIN;
         if (E == 0) return r;
         float[] mov = new float[E];
-        boolean[] breath = new boolean[E], nod = new boolean[E];
+        boolean[] breath = new boolean[E], nod = new boolean[E], snore = new boolean[E];
+        int firstSeen = -1;
         for (int i = 0; i < E; i++) {
             Night.Epoch e = n.epochs.get(i);
             mov[i] = e.move;
             breath[i] = e.valid >= 0.4f;
-            nod[i] = e.valid < 0.15f && e.move < 1;
+            snore[i] = e.snoresReg >= 2 || e.snores >= 4;   // horlayan kişi uyuyordur
+            nod[i] = e.valid < 0.15f && e.move < 1 && !snore[i];
+            if (firstSeen < 0 && (breath[i] || snore[i])) firstSeen = i;
         }
-        // 1) uyanıklık: ağırlıklı hareket penceresi
+        // 1) uyanıklık: ağırlıklı hareket penceresi (aktigrafi); horlarken yalnız çok güçlü hareket uyandırır
         double[] w = {0.15, 0.3, 1.0, 0.3, 0.15};
         int[] st = new int[E];
         for (int i = 0; i < E; i++) {
@@ -52,26 +57,34 @@ public final class SleepAnalyzer {
                 int k = i + j;
                 if (k >= 0 && k < E) d += w[j + 2] * mov[k];
             }
-            boolean wake = d >= 6.0 || (mov[i] >= 2 && !breath[i] && !nod[i]);
+            boolean wake = d >= (snore[i] ? 12.0 : 6.0);
             st[i] = wake ? WAKE : nod[i] ? NODATA : LIGHT;
         }
-        // 2) veri yok bölümleri: kısa ise uyku say; uyanıklığın hemen ardından geliyorsa (kalktı) uyanık
+        // 2) nefesin ölçülemediği ama hareketin de olmadığı bölümler:
+        //    - kayıt başında, hiç nefes görülmeden önce → uyanık (henüz yatmamış/yerleşiyor)
+        //    - öncesinde ve sonrasında süren hareket varsa ve ≤30 dk ise → kalkıp dönmüş, uyanık
+        //    - kayıt sonunda, öncesinde büyük hareket varsa → kalkmış, uyanık
+        //    - diğerleri → uyku, evresi ölçülemedi (kıpırtısız yatış; aktigrafide de uyku sayılır)
         for (int i = 0; i < E; ) {
             if (st[i] != NODATA) { i++; continue; }
             int j = i;
             while (j < E && st[j] == NODATA) j++;
-            int before = i > 0 ? st[i - 1] : WAKE, after = j < E ? st[j] : WAKE;
-            int fill = NODATA;
-            if (before == WAKE) fill = WAKE;
-            else if (j - i <= 6 && before == LIGHT && after == LIGHT) fill = LIGHT;
+            // "kalkıp dönme": öncesinde ve sonrasında süren hareket (≥2 uyanık dönem ya da ≥10 sn'lik hareket)
+            boolean bigBefore = (i >= 2 && st[i - 1] == WAKE && st[i - 2] == WAKE) || bigMove(mov, i - 3, i - 1);
+            boolean bigAfter = (j + 1 < E && st[j] == WAKE && st[j + 1] == WAKE) || bigMove(mov, j, j + 2);
+            int fill;
+            if (firstSeen < 0 || i < firstSeen) fill = WAKE;
+            else if (j >= E) fill = bigBefore ? WAKE : UNK;
+            else if (bigBefore && bigAfter && j - i <= 60) fill = WAKE;
+            else fill = UNK;
             for (int k = i; k < j; k++) st[k] = fill;
             i = j;
         }
         // 3) uyanıklarla çevrili kısa (<3 dk) uyku parçaları uyanıklıktır
         for (int i = 0; i < E; ) {
-            if (st[i] != LIGHT) { i++; continue; }
+            if (!asleep(st[i])) { i++; continue; }
             int j = i;
-            while (j < E && st[j] == LIGHT) j++;
+            while (j < E && asleep(st[j])) j++;
             if (j - i < 6 && runBefore(st, i, WAKE) >= 10 && runAfter(st, j, WAKE) >= 10)
                 for (int k = i; k < j; k++) st[k] = WAKE;
             i = j;
@@ -79,13 +92,13 @@ public final class SleepAnalyzer {
         // 4) uykuya dalış: sonraki 10 dk'nın ≥%80'i uyku olan ilk dönem; son uyku dönemi
         int onset = -1;
         for (int i = 0; i < E && onset < 0; i++) {
-            if (st[i] != LIGHT) continue;
+            if (!asleep(st[i])) continue;
             int cnt = 0, tot = 0;
-            for (int k = i; k < Math.min(E, i + 20); k++) { tot++; if (st[k] == LIGHT) cnt++; }
+            for (int k = i; k < Math.min(E, i + 20); k++) { tot++; if (asleep(st[k])) cnt++; }
             if (tot >= 6 && cnt >= 0.8 * tot) onset = i;
         }
         int last = -1;
-        for (int i = E - 1; i >= 0; i--) if (st[i] == LIGHT) { last = i; break; }
+        for (int i = E - 1; i >= 0; i--) if (asleep(st[i])) { last = i; break; }
         if (onset < 0) {
             Arrays.fill(st, WAKE);
             for (int i = 0; i < E; i++) if (nod[i]) st[i] = NODATA;
@@ -99,6 +112,13 @@ public final class SleepAnalyzer {
         r.last = last;
         summarize(n, r);
         return r;
+    }
+
+    static boolean asleep(int s) { return s == LIGHT || s == DEEP || s == REM || s == UNK; }
+
+    private static boolean bigMove(float[] mov, int a, int b) {
+        for (int k = Math.max(0, a); k <= Math.min(mov.length - 1, b); k++) if (mov[k] >= 10) return true;
+        return false;
     }
 
     private static int runBefore(int[] st, int i, int v) {
@@ -176,6 +196,7 @@ public final class SleepAnalyzer {
                 case REM: r.remMin += EP_MIN; sleep++; break;
                 case LIGHT: r.lightMin += EP_MIN; sleep++; break;
                 case DEEP: r.deepMin += EP_MIN; sleep++; break;
+                case UNK: r.unkMin += EP_MIN; sleep++; break;
             }
         }
         r.nodataMin = nod * EP_MIN;
@@ -203,7 +224,7 @@ public final class SleepAnalyzer {
             Night.Epoch e = n.epochs.get(i);
             int s = r.stage[i];
             if ((s == LIGHT || s == DEEP || s == REM) && e.rate == e.rate) rates.add(e.rate);
-            if ((s == LIGHT || s == DEEP || s == REM) && (e.snoresReg >= 2 || e.snores >= 4)) r.snoreMin += EP_MIN;
+            if (asleep(s) && (e.snoresReg >= 2 || e.snores >= 4)) r.snoreMin += EP_MIN;
         }
         if (!rates.isEmpty()) {
             r.rateMed = pct(rates, 0.5f);

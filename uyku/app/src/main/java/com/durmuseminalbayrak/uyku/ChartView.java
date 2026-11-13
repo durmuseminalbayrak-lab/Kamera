@@ -11,7 +11,8 @@ import java.util.Calendar;
 /** Rapor grafikleri: uyku evreleri, nefes hızı, hareket/horlama/gürültü. */
 final class ChartView extends View {
     static final int STAGES = 0, RATE = 1, ACTIVITY = 2;
-    static final int C_WAKE = 0xFFFFB86B, C_REM = 0xFFB794F6, C_LIGHT = 0xFF7AA2FF, C_DEEP = 0xFF3D5AFE, C_NO = 0xFF2A3147;
+    static final int C_WAKE = 0xFFFFB86B, C_REM = 0xFFB794F6, C_LIGHT = 0xFF7AA2FF, C_DEEP = 0xFF3D5AFE, C_NO = 0xFF2A3147,
+            C_UNK = 0xFF46557A;
 
     private final int mode;
     private final Night n;
@@ -62,8 +63,9 @@ final class ChartView extends View {
                     c.drawRect(x0, T, x1, B, p);
                     continue;
                 }
-                int row = s == SleepAnalyzer.WAKE ? 0 : s == SleepAnalyzer.REM ? 1 : s == SleepAnalyzer.LIGHT ? 2 : 3;
-                p.setColor(cols[row]);
+                int row = s == SleepAnalyzer.WAKE ? 0 : s == SleepAnalyzer.REM ? 1
+                        : s == SleepAnalyzer.LIGHT || s == SleepAnalyzer.UNK ? 2 : 3;
+                p.setColor(s == SleepAnalyzer.UNK ? C_UNK : cols[row]);
                 float y0 = T + rh * row + rh * 0.15f;
                 c.drawRect(x0, y0, x1, y0 + rh * 0.7f, p);
             }

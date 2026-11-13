@@ -192,6 +192,14 @@ public final class SleepService extends Service {
                     try { writer.event(v); } catch (IOException x) { lastError = "Kayıt yazılamadı: " + x.getMessage(); }
                 }
             }
+
+            @Override
+            public void sec(Night.Sec c) {
+                Night.Writer w = writer;
+                if (w != null) {
+                    try { w.sec(c); } catch (IOException x) { lastError = "Kayıt yazılamadı: " + x.getMessage(); }
+                }
+            }
         });
 
         // ivmeölçer: telefon göğüste/yatakta ise nefesi ve hareketi doğrudan ölçer
