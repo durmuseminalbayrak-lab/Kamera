@@ -51,7 +51,8 @@ public final class Exporter {
         SimpleDateFormat hm = new SimpleDateFormat("HH:mm:ss", Locale.US);
         w.write("# kayit: " + hm.format(new Date(n.startMillis)) + " -> " + hm.format(new Date(n.endMillis))
                 + "; tamamlandi=" + (n.complete ? "evet" : "hayir") + "; durma=" + stopName(n.complete ? n.stopReason : -1)
-                + (n.lastWrite > 0 ? "; son_yazma=" + hm.format(new Date(n.lastWrite)) : "") + "\n");
+                + (n.lastWrite > 0 ? "; son_yazma=" + hm.format(new Date(n.lastWrite)) : "")
+                + (n.stalled() ? "; veri_kesildi=" + hm.format(new Date(n.dataEnd())) : "") + "\n");
         if (log != null && !log.isEmpty())
             for (String l : log.split("\n")) if (!l.trim().isEmpty()) w.write("# hata: " + l.replace(',', ';') + "\n");
         if (!n.secs.isEmpty()) {

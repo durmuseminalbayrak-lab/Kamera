@@ -88,7 +88,7 @@ public final class SleepService extends Service {
     private volatile int stopReason;
     private long elapsedStart;
     private double lastClockDiff;
-    private volatile long rampStart;
+    private volatile long rampStart, lastBlockAt;
     private int faults;
     private long lastFaultEv = -1_000_000;
     private Thread reader, worker;
@@ -300,6 +300,7 @@ public final class SleepService extends Service {
 
     /** Mikrofon okunamazsa (ses sunucusu yeniden başladı vb.) aynı kaynağı yeniden açar. */
     private boolean reopenMic() {
+        lastBlockAt = SystemClock.elapsedRealtime();   // bekçi yeniden açılırken tetiklenmesin
         AudioRecord old = mic;
         mic = null;
         if (old != null) {
@@ -565,6 +566,7 @@ public final class SleepService extends Service {
                 fault(Night.Event.F_MIC);
                 continue;
             }
+            lastBlockAt = SystemClock.elapsedRealtime();
             float[] b = pool.poll();
             if (b == null) b = new float[Sonar.N];
             int pk = 0;
@@ -605,7 +607,19 @@ public final class SleepService extends Service {
                 break;
             }
             long el = SystemClock.elapsedRealtime() - t0;
-            if (b == null) continue;
+            if (b == null) {
+                // bekçi: mikrofondan 5 sn blok gelmediyse okuma takılmıştır; durdurup yeniden açılmasını sağla
+                long now = SystemClock.elapsedRealtime(), lb = lastBlockAt;
+                if (micReady && !stopFlag && lb != 0 && now - lb > 5000) {
+                    lastBlockAt = now;
+                    Diag.log("mikrofondan 5 sn veri gelmedi", null);
+                    AudioRecord m = mic;
+                    if (m != null) {
+                        try { m.stop(); } catch (Exception ignored) { }
+                    }
+                }
+                continue;
+            }
             long da = discAt;
             if (discFlag || (da != 0 && SystemClock.elapsedRealtime() >= da)) {
                 discFlag = false;

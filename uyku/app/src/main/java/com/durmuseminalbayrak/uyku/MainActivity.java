@@ -260,12 +260,12 @@ public final class MainActivity extends Activity {
             try {
                 Night last = Night.read(files[0]);
                 problem = last.stopProblem();
-                at = last.complete ? last.endMillis : last.lastWrite;
+                at = last.problemAt();
             } catch (IOException ignored) {
             }
             if (problem != null) {
                 LinearLayout c = card();
-                c.addView(tv("Son kayıt " + new SimpleDateFormat("HH:mm", TR).format(new Date(at)) + "'de kendiliğinden durdu", 16, WARN, true));
+                c.addView(tv("Son gece " + new SimpleDateFormat("HH:mm", TR).format(new Date(at)) + "'den sonrası ölçülmedi", 16, WARN, true));
                 c.addView(tv("Neden: " + problem + "." + (isXiaomi()
                         ? " Xiaomi telefonlar arka plandaki uygulamaları gece kapatabiliyor; aşağıdaki ayarları bir kez yap."
                         : " Pil kısıtlamasını kaldırmak çoğu zaman çözer."), 13, SUB, false));
@@ -596,7 +596,7 @@ public final class MainActivity extends Activity {
         col.addView(tv(hm.format(new Date(n.startMillis)) + " → " + hm.format(new Date(n.complete ? n.endMillis : n.lastWrite))
                 + " · kayıt " + dur(r.tibMin), 13, SUB, false));
         if (problem != null) {
-            TextView pw = tv("Kayıt kendiliğinden durdu: " + problem + ". Sonrası ölçülmedi.", 13, WARN, false);
+            TextView pw = tv(hm.format(new Date(n.problemAt())) + "'den sonrası ölçülmedi: " + problem + ".", 13, WARN, false);
             pw.setPadding(0, dp(4), 0, 0);
             col.addView(pw);
         }

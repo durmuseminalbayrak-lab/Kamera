@@ -262,9 +262,22 @@ public final class Night {
     public int stopReason;
     public long lastWrite;
 
-    /** Kaydın neden bittiğinin kısa açıklaması; kullanıcı bitirdiyse null. */
+    /** Ölçüm verisinin bittiği an (dönemlerden). */
+    public long dataEnd() { return startMillis + (long) (epochs.size() * EPOCH_SEC * 1000); }
+
+    /** Kayıt sürdüğü hâlde mikrofondan veri gelmemiş mi (bitişle son dönem arasında >2 dk)? */
+    public boolean stalled() { return complete && endMillis - dataEnd() > 120_000; }
+
+    /** Ölçümün kesildiği an (sorun yoksa bitiş). */
+    public long problemAt() {
+        if (!complete) return lastWrite > 0 ? lastWrite : dataEnd();
+        return stalled() ? dataEnd() : endMillis;
+    }
+
+    /** Kaydın neden erken bittiğinin kısa açıklaması; sorun yoksa null. */
     public String stopProblem() {
         if (!complete) return "telefon uygulamayı kapattı ya da uygulama çöktü";
+        if (stalled()) return "kayıt açıktı ama mikrofondan veri gelmedi";
         switch (stopReason) {
             case Event.BY_MIC: return "mikrofon okunamadı";
             case Event.BY_SYSTEM: return "telefon uygulamayı durdurdu";
